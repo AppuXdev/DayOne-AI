@@ -1,0 +1,22 @@
+credentials:
+  usernames:
+    admin_acme:
+      email: admin@acmecorp.com
+      name: Acme HR Admin
+      password: $2b$12$L.0uIBNyNqSrdKrYqFufeeTcFGbLO7eocgfunOcg65VprOLvZQZt.
+      organization: org_acme
+      role: admin
+    john_doe:
+      email: john@acmecorp.com
+      name: John Doe
+      password: $2b$12$BTao9JQ6VIPZz6DHvPG35uwC/729NYpmE0eEek40vprxbWjQ/QGqy
+      organization: org_acme
+      role: employee
+cookie:
+  expiry_days: 30
+  key: dayone_secret_signature_key_2026
+  name: dayone_login
+pre-authorized:
+  emails: []
+preauthorized:
+  emails: []
