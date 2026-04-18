@@ -12,13 +12,13 @@ from typing import Any, Dict, List, Optional, Sequence
 import streamlit as st
 import streamlit_authenticator as stauth
 from dotenv import load_dotenv
-from langchain.memory import ConversationBufferMemory
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import HumanMessage, SystemMessage
 from pydantic import SecretStr
 
+from chat_memory import ConversationHistory
 from ingest import rebuild_organization_index
 from retriever import HybridRetriever, RetrievalResult, USE_RERANKER, CONF_LOW, confidence_label
 from user_admin import (
@@ -40,7 +40,7 @@ ASSETS_DIR = ROOT_DIR / "assets"
 DATA_DIR = ROOT_DIR / "data"
 LOGS_DIR = ROOT_DIR / "logs"
 MASCOT_PATH = ASSETS_DIR / "mascot.png"
-MODEL_NAME = "llama3-8b-8192"
+MODEL_NAME = os.getenv("DAYONE_GROQ_MODEL", "llama-3.1-8b-instant")
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -239,11 +239,7 @@ def configure_page(authenticated: bool) -> None:
 def initialize_state() -> None:
     defaults: Dict[str, Any] = {
         "messages": [],
-        "memory": ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True,
-            output_key="answer",
-        ),
+        "memory": ConversationHistory(),
         "pending_prompt": None,
         "current_org": None,
         "current_username": None,
@@ -273,7 +269,7 @@ def require_groq_api_key() -> None:
 def clear_conversation_memory() -> None:
     st.session_state.messages = []
     memory = st.session_state.get("memory")
-    if isinstance(memory, ConversationBufferMemory):
+    if hasattr(memory, "clear"):
         memory.chat_memory.clear()
 
 
@@ -325,7 +321,7 @@ def build_hybrid_retriever(vector_store: FAISS) -> HybridRetriever:
     )
 
 
-def rewrite_query(query: str, memory: ConversationBufferMemory) -> str:
+def rewrite_query(query: str, memory: ConversationHistory) -> str:
     """Rewrite a follow-up query into a standalone question using chat history.
 
     Skipped if there is no prior conversation (avoids unnecessary LLM call).
@@ -447,7 +443,7 @@ def _build_justification(result: RetrievalResult, sources: List[str]) -> List[di
 def run_rag_query(
     vector_store: Optional[FAISS],
     prompt: str,
-    memory: ConversationBufferMemory,
+    memory: ConversationHistory,
     username: str,
     org_id: str,
 ) -> tuple[str, List[str], float, bool, List[dict]]:

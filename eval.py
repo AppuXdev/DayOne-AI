@@ -54,7 +54,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
 DATA_DIR = ROOT_DIR / "data"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-MODEL_NAME = "llama3-8b-8192"
+MODEL_NAME = os.getenv("DAYONE_GROQ_MODEL", "llama-3.1-8b-instant")
 JUDGE_CACHE_PATH = ROOT_DIR / "eval_judge_cache.json"
 
 FALLBACK_PHRASES = [
@@ -534,7 +534,7 @@ def _summarise(results: List[QueryResult], mode: str) -> dict:
 def _print_table(summary_on: dict, summary_off: dict) -> None:
     W = 26
     print("\n" + "=" * 76)
-    print("  DayOne AI — Evaluation Results")
+    print("  DayOne AI - Evaluation Results")
     print("=" * 76)
     print(f"{'Metric':<{W}} {'Reranker ON':>22} {'Reranker OFF':>22}")
     print("-" * 76)
@@ -558,7 +558,7 @@ def _print_table(summary_on: dict, summary_off: dict) -> None:
     # Tier 2 — only printed if judge was run
     if summary_on.get("avg_faithfulness") is not None:
         print("-" * 76)
-        print(f"{'— Tier 2: Judge Metrics —':<{W}}")
+        print(f"{'- Tier 2: Judge Metrics -':<{W}}")
         tier2_metrics = [
             ("Faithfulness",           "avg_faithfulness",       "{:.1%}"),
             ("Answer correctness",     "avg_correctness",        "{:.1%}"),
@@ -567,8 +567,8 @@ def _print_table(summary_on: dict, summary_off: dict) -> None:
         for label, key, fmt in tier2_metrics:
             v_on = summary_on.get(key)
             v_off = summary_off.get(key)
-            val_on = fmt.format(v_on) if v_on is not None else "—"
-            val_off = fmt.format(v_off) if v_off is not None else "—"
+            val_on = fmt.format(v_on) if v_on is not None else "-"
+            val_off = fmt.format(v_off) if v_off is not None else "-"
             print(f"{label:<{W}} {val_on:>22} {val_off:>22}")
 
     print("=" * 76)
@@ -577,7 +577,7 @@ def _print_table(summary_on: dict, summary_off: dict) -> None:
     print("\nError category breakdown (Reranker ON):")
     cats = summary_on["error_categories"]
     for cat, count in cats.items():
-        bar = "█" * count
+        bar = "#" * count
         print(f"  {cat:<20} {count:>3}  {bar}")
 
     print("\nNotes:")
@@ -637,7 +637,7 @@ def main() -> None:
                 result = run_judge(result, rr.final_docs, llm, judge_cache, args.rerun)
 
             mode_results.append(result)
-            status = "✓" if result.error_category == "ok" else f"✗ [{result.error_category}]"
+            status = "OK" if result.error_category == "ok" else f"ERR [{result.error_category}]"
             faith_str = f"  faith={result.faithfulness:.2f}" if result.faithfulness is not None else ""
             print(
                 f"    {status} conf={result.confidence:.2f}  "
@@ -651,7 +651,7 @@ def main() -> None:
 
     if args.judge:
         _save_judge_cache(judge_cache)
-        print(f"[eval] Judge cache saved → {JUDGE_CACHE_PATH}")
+        print(f"[eval] Judge cache saved -> {JUDGE_CACHE_PATH}")
 
     _print_table(summaries[0], summaries[1])
 

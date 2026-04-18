@@ -12,6 +12,7 @@ import os
 import shutil
 import time
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -24,13 +25,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from langchain.memory import ConversationBufferMemory
 from langchain.schema import HumanMessage, SystemMessage
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from chat_memory import ConversationHistory
 from ingest import archive_file_if_exists, rebuild_organization_index
 from retriever import HybridRetriever, RetrievalResult, USE_RERANKER, CONF_LOW, confidence_label
 from feedback import get_feedback_store
@@ -55,7 +56,7 @@ DATA_DIR = ROOT_DIR / "data"
 VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
 LOGS_DIR = ROOT_DIR / "logs"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-MODEL_NAME = "llama3-8b-8192"
+MODEL_NAME = os.getenv("DAYONE_GROQ_MODEL", "llama-3.1-8b-instant")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
@@ -77,7 +78,14 @@ SYSTEM_PROMPT = (
     "documents, explicitly flag the conflict before answering."
 )
 
-app = FastAPI(title="DayOne AI API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+
+
+app = FastAPI(title="DayOne AI API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -85,10 +93,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-bearer_scheme = HTTPBearer(auto_error=False)
-conversation_memories: Dict[str, ConversationBufferMemory] = {}
-
 
 # ---------------------------------------------------------------------------
 # Per-tenant rate limiter (token bucket)
@@ -221,6 +225,9 @@ class TokenPayload(BaseModel):
     organization: str
     role: str
     exp: Optional[int] = None
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class InMemoryUser(BaseModel):
@@ -400,15 +407,11 @@ def get_memory_key(username: str, organization: str) -> str:
     return f"{organization}:{username}"
 
 
-def get_or_create_memory(username: str, organization: str) -> ConversationBufferMemory:
+def get_or_create_memory(username: str, organization: str) -> ConversationHistory:
     key = get_memory_key(username, organization)
     memory = conversation_memories.get(key)
     if memory is None:
-        memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True,
-            output_key="answer",
-        )
+        memory = ConversationHistory()
         conversation_memories[key] = memory
     return memory
 
@@ -426,7 +429,7 @@ def build_hybrid_retriever(
     )
 
 
-def rewrite_query(query: str, memory: ConversationBufferMemory, llm: ChatGroq) -> str:
+def rewrite_query(query: str, memory: ConversationHistory, llm: ChatGroq) -> str:
     """Contextualise a follow-up query using recent chat history."""
     messages = memory.chat_memory.messages
     if len(messages) < 2:
@@ -954,7 +957,11 @@ def get_drift_report(
     return asdict(drift)
 
 
-@app.on_event("startup")
-def startup() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+
+
+app.router.lifespan_context = lifespan

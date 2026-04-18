@@ -98,8 +98,8 @@ npm run dev
 
 Derived from current `config.yaml` password hashes:
 
-- Employee: `john_doe` / `password123`
-- Admin: `admin_acme` / `password123`
+- Employee: username `john_doe`, password `password123`
+- Admin: username `admin_acme`, password `password123`
 
 Production note: rotate cookie key and credentials before external deployment.
 
@@ -174,12 +174,12 @@ With judge mode:
 Latest run:
 
 ```text
-6 passed
+8 passed
 ```
 
 Notes:
 
-- Test suite currently passes, with non-blocking deprecation warnings from FastAPI lifecycle hooks and LangChain memory APIs.
+- Test suite currently passes cleanly under pytest; external Streamlit testing warnings are filtered in `pytest.ini`.
 
 Run tests:
 
@@ -190,6 +190,7 @@ Run tests:
 ## Environment Variables
 
 - `GROQ_API_KEY`: required.
+- `DAYONE_GROQ_MODEL`: optional, default `llama-3.1-8b-instant`.
 - `DAYONE_USE_RERANKER`: `1` (default) or `0`.
 - `TENANT_RATE_LIMIT_RPM`: default `30`.
 - `TENANT_UPLOAD_LIMIT_PER_DAY`: default `20`.

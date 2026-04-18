@@ -226,7 +226,7 @@ def rebuild_organization_index(
             all_chunks.extend(cached)
             new_cache[fname] = cached
             reused += 1
-            print(f"[{org_name}] {fname}: unchanged — using cached chunks ({len(cached)} chunks)")
+            print(f"[{org_name}] {fname}: unchanged - using cached chunks ({len(cached)} chunks)")
             continue
 
         # File is new or modified — re-chunk
@@ -246,7 +246,7 @@ def rebuild_organization_index(
         all_chunks.extend(chunks)
         new_cache[fname] = chunks
         rechunked += 1
-        print(f"[{org_name}] {fname}: {'modified' if fname in hash_registry else 'new'} — {len(chunks)} chunks")
+        print(f"[{org_name}] {fname}: {'modified' if fname in hash_registry else 'new'} - {len(chunks)} chunks")
 
     if not all_chunks:
         print(f"[{org_name}] skipped: no parseable chunks.")
@@ -294,7 +294,7 @@ def rebuild_organization_index(
         save_hash_registry(org_dir, new_registry)
         save_chunk_cache(org_dir, new_cache)
 
-    print(f"[{org_name}] index built — {store.index.ntotal} vectors → {out_dir}")
+    print(f"[{org_name}] index built - {store.index.ntotal} vectors -> {out_dir}")
 
 
 def build_all_organization_indexes() -> None:

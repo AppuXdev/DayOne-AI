@@ -2,6 +2,7 @@
 """Generate sample HR PDF documents for DayOne AI demo organizations."""
 
 from pathlib import Path
+import sys
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -11,7 +12,7 @@ try:
 except ImportError:
     print("reportlab not installed. Installing...")
     import subprocess
-    subprocess.check_call(["pip", "install", "reportlab"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "reportlab"])
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
@@ -77,7 +78,7 @@ def create_acme_handbook_pdf():
         story.append(Spacer(1, 0.15*inch))
     
     doc.build(story)
-    print(f"✅ Created {pdf_path}")
+    print(f"Created {pdf_path}")
 
 def create_globex_handbook_pdf():
     """Create Globex Corp Employee Handbook PDF."""
@@ -140,7 +141,7 @@ def create_globex_handbook_pdf():
         story.append(Spacer(1, 0.15*inch))
     
     doc.build(story)
-    print(f"✅ Created {pdf_path}")
+    print(f"Created {pdf_path}")
 
 def create_acme_policies_pdf():
     """Create Acme Corp Policies PDF."""
@@ -193,7 +194,7 @@ def create_acme_policies_pdf():
         story.append(Spacer(1, 0.15*inch))
     
     doc.build(story)
-    print(f"✅ Created {pdf_path}")
+    print(f"Created {pdf_path}")
 
 def create_globex_career_pdf():
     """Create Globex Corp Career Development PDF."""
@@ -250,12 +251,12 @@ def create_globex_career_pdf():
         story.append(Spacer(1, 0.15*inch))
     
     doc.build(story)
-    print(f"✅ Created {pdf_path}")
+    print(f"Created {pdf_path}")
 
 if __name__ == "__main__":
-    print("🚀 Generating sample HR PDF documents...\n")
+    print("Generating sample HR PDF documents...\n")
     create_acme_handbook_pdf()
     create_acme_policies_pdf()
     create_globex_handbook_pdf()
     create_globex_career_pdf()
-    print("\n✨ All sample PDFs created successfully!")
+    print("\nAll sample PDFs created successfully!")
