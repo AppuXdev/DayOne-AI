@@ -1,7 +1,8 @@
 param(
     [switch]$SkipIngest,
     [switch]$SkipInstall,
-    [switch]$NoStreamlit
+    [switch]$NoStreamlit,
+    [switch]$UseSeparateTerminals
 )
 
 Set-StrictMode -Version Latest
@@ -28,6 +29,104 @@ function Invoke-ExternalCommand {
 
         throw "$Step failed with exit code $LASTEXITCODE."
     }
+}
+
+function Stop-DayOneJobs {
+    $jobs = Get-Job -Name 'DayOne-*' -ErrorAction SilentlyContinue
+    if (-not $jobs) {
+        return
+    }
+
+    foreach ($job in $jobs) {
+        try {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        }
+        catch {
+            Write-Warning "Unable to stop job $($job.Name): $($_.Exception.Message)"
+        }
+    }
+
+    foreach ($job in $jobs) {
+        try {
+            Remove-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        }
+        catch {
+            Write-Warning "Unable to remove job $($job.Name): $($_.Exception.Message)"
+        }
+    }
+}
+
+function Invoke-IngestWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonExe,
+        [int]$MaxAttempts = 3
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Host ("Running initial ingest (attempt {0}/{1})..." -f $attempt, $MaxAttempts) -ForegroundColor Cyan
+        & $PythonExe ingest.py
+
+        if ($LASTEXITCODE -eq 0) {
+            return $true
+        }
+
+        Write-Warning ("Initial ingest attempt {0} failed with exit code {1}." -f $attempt, $LASTEXITCODE)
+
+        if ($attempt -lt $MaxAttempts) {
+            Write-Host 'Attempting lock recovery (stopping existing DayOne background jobs) before retry...' -ForegroundColor DarkYellow
+            Stop-DayOneJobs
+            Start-Sleep -Seconds ([Math]::Min(3, $attempt))
+        }
+    }
+
+    return $false
+}
+
+function Start-BackgroundProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList,
+        [string]$WorkingDirectory = $PWD.Path,
+        [hashtable]$Env = @{}
+    )
+
+    $runtimeLogDir = Join-Path $projectRoot 'logs\runtime'
+    New-Item -ItemType Directory -Path $runtimeLogDir -Force | Out-Null
+
+    $stdoutPath = Join-Path $runtimeLogDir ("{0}.out.log" -f $Name)
+    $stderrPath = Join-Path $runtimeLogDir ("{0}.err.log" -f $Name)
+
+    $jobName = "DayOne-$Name"
+    $existing = Get-Job -Name $jobName -ErrorAction SilentlyContinue
+    if ($existing) {
+        $existing | Stop-Job -ErrorAction SilentlyContinue
+        $existing | Remove-Job -ErrorAction SilentlyContinue
+    }
+
+    $job = Start-Job -Name $jobName -ScriptBlock {
+        param(
+            [string]$wd,
+            [string]$exe,
+            [string[]]$args,
+            [string]$stdout,
+            [string]$stderr,
+            [hashtable]$envMap
+        )
+
+        Set-Location $wd
+        foreach ($entry in $envMap.GetEnumerator()) {
+            Set-Item -Path ("Env:{0}" -f $entry.Key) -Value ([string]$entry.Value)
+        }
+
+        & $exe @args 1>> $stdout 2>> $stderr
+    } -ArgumentList $WorkingDirectory, $FilePath, $ArgumentList, $stdoutPath, $stderrPath, $Env
+
+    Write-Host ("Started {0} (Job {1}). Logs: {2}" -f $Name, $job.Id, $stdoutPath) -ForegroundColor DarkCyan
 }
 
 $venvDir = Join-Path $projectRoot '.venv'
@@ -69,27 +168,62 @@ if (-not $SkipInstall) {
 }
 
 if (-not $SkipIngest) {
-    Write-Host 'Running initial ingest...' -ForegroundColor Cyan
-    Invoke-ExternalCommand -Step 'initial ingest' -AllowFailure -Command { & $pythonExe ingest.py }
+    if (-not (Invoke-IngestWithRetry -PythonExe $pythonExe -MaxAttempts 3)) {
+        Write-Warning 'Initial ingest failed after retries. Continuing startup.'
+    }
 }
 
-Write-Host 'Starting auto-ingest watcher in a new terminal...' -ForegroundColor Cyan
-$watcherCommand = "Set-Location '$projectRoot'; & '$pythonExe' auto_ingest.py"
-Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $watcherCommand | Out-Null
+if ($UseSeparateTerminals) {
+    Write-Host 'Starting auto-ingest watcher in a new terminal...' -ForegroundColor Cyan
+    $watcherCommand = "Set-Location '$projectRoot'; & '$pythonExe' auto_ingest.py"
+    Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $watcherCommand | Out-Null
 
-Write-Host 'Starting FastAPI backend in a new terminal...' -ForegroundColor Cyan
-$apiCommand = "Set-Location '$projectRoot'; & '$pythonExe' -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
-Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $apiCommand | Out-Null
+    Write-Host 'Starting FastAPI backend in a new terminal...' -ForegroundColor Cyan
+    $apiCommand = "Set-Location '$projectRoot'; & '$pythonExe' -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
+    Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $apiCommand | Out-Null
 
-Write-Host 'Starting Next.js frontend in a new terminal...' -ForegroundColor Cyan
-$frontendCommand = "Set-Location '$projectRoot'; `$env:NEXT_PUBLIC_API_BASE_URL='http://127.0.0.1:8000'; npm.cmd run dev"
-Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $frontendCommand | Out-Null
+    Write-Host 'Starting Next.js frontend in a new terminal...' -ForegroundColor Cyan
+    $frontendCommand = "Set-Location '$projectRoot'; `$env:NEXT_PUBLIC_API_BASE_URL='http://127.0.0.1:8000'; npm.cmd run dev"
+    Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $frontendCommand | Out-Null
+}
+else {
+    Write-Host 'Starting auto-ingest watcher in background (same terminal session)...' -ForegroundColor Cyan
+    Start-BackgroundProcess -Name 'watcher' -FilePath $pythonExe -ArgumentList @('auto_ingest.py') -WorkingDirectory $projectRoot
+
+    Write-Host 'Starting FastAPI backend in background (same terminal session)...' -ForegroundColor Cyan
+    Start-BackgroundProcess -Name 'api' -FilePath $pythonExe -ArgumentList @('-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8000', '--reload') -WorkingDirectory $projectRoot
+
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+    if (-not $npmCmd) {
+        throw 'npm is not installed or not on PATH. Install Node.js 18+ and re-run .\run.ps1.'
+    }
+
+    Write-Host 'Starting Next.js frontend in background (same terminal session)...' -ForegroundColor Cyan
+    Start-BackgroundProcess `
+        -Name 'frontend' `
+        -FilePath $npmCmd.Source `
+        -ArgumentList @('run', 'dev') `
+        -WorkingDirectory $projectRoot `
+        -Env @{ NEXT_PUBLIC_API_BASE_URL = 'http://127.0.0.1:8000' }
+
+    Write-Host "Background logs: $projectRoot\logs\runtime" -ForegroundColor Green
+}
 
 if ($NoStreamlit) {
     Write-Host 'Startup complete.' -ForegroundColor Green
     Write-Host 'Frontend: http://localhost:3000' -ForegroundColor Green
     Write-Host 'Backend : http://127.0.0.1:8000' -ForegroundColor Green
-    Write-Host 'Watcher : running in separate terminal' -ForegroundColor Green
+    if ($UseSeparateTerminals) {
+        Write-Host 'Watcher : running in separate terminal' -ForegroundColor Green
+    }
+    else {
+        Write-Host 'Watcher : running in background process (same terminal session)' -ForegroundColor Green
+        Write-Host "Logs    : $projectRoot\logs\runtime" -ForegroundColor Green
+        Write-Host "Stop all: Get-Job DayOne-* | Stop-Job ; Get-Job DayOne-* | Remove-Job" -ForegroundColor Green
+    }
     return
 }
 

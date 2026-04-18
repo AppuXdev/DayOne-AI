@@ -59,7 +59,11 @@ MODEL_NAME = "llama3-8b-8192"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+    if o.strip()
+]
 TENANT_RATE_LIMIT_RPM: int = int(os.getenv("TENANT_RATE_LIMIT_RPM", "30"))
 TENANT_UPLOAD_LIMIT_PER_DAY: int = int(os.getenv("TENANT_UPLOAD_LIMIT_PER_DAY", "20"))
 
@@ -323,17 +327,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def authenticate_user(username: str, password: str) -> InMemoryUser:
-    # Hardcoded test credentials for john_doe
-    if username == "john_doe" and password == "password123":
-        return InMemoryUser(
-            username="john_doe",
-            email="john@acmecorp.com",
-            name="John Doe",
-            organization="org_acme",
-            password="",
-            role="employee",
-        )
-    
     users = get_users()
     record = users.get(username)
     if not record:

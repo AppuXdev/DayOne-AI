@@ -22,6 +22,10 @@
   1. Unauthenticated: Use "Forgot Your Password?" expander to reset
   2. Authenticated: Use "Change Password" in sidebar under settings expander
 
+### Canonical Test Credentials
+- Employee: `john_doe` / `password123`
+- Admin: `admin_acme` / `password123`
+
 ### 3. ✅ GROQ API Key Configuration
 - **Status**: ALREADY SET
 - **File**: `.env` contains valid `GROQ_API_KEY`

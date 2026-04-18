@@ -18,7 +18,9 @@ import hashlib
 import json
 import os
 import pickle
+import stat
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -128,6 +130,43 @@ def save_chunk_cache(org_dir: Path, cache: Dict[str, List]) -> None:
         pickle.dump(cache, fh)
 
 
+def _remove_existing_index(index_dir: Path, org_name: str) -> None:
+    """Remove an existing FAISS index directory with Windows-friendly retries.
+
+    On Windows, `PermissionError` commonly occurs when files are briefly held by
+    OneDrive sync, antivirus, or an active app process (API/UI/watcher).
+    """
+    if not index_dir.exists():
+        return
+
+    def _on_rm_error(func, path, _exc_info):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
+    last_error: Optional[Exception] = None
+    for attempt in range(1, 6):
+        try:
+            shutil.rmtree(index_dir, onerror=_on_rm_error)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt < 5:
+                time.sleep(0.4 * attempt)
+                continue
+            raise RuntimeError(
+                f"[{org_name}] could not replace index at {index_dir}. "
+                "The directory appears locked by another process "
+                "(Streamlit/FastAPI/watcher/OneDrive). "
+                "Stop those processes and retry."
+            ) from exc
+        except Exception as exc:
+            last_error = exc
+            break
+
+    if last_error is not None:
+        raise RuntimeError(f"[{org_name}] failed to remove existing index at {index_dir}: {last_error}") from last_error
+
+
 def rebuild_organization_index(
     org_dir: Path,
     embeddings: Optional[HuggingFaceEmbeddings] = None,
@@ -159,8 +198,7 @@ def rebuild_organization_index(
     org_name = org_dir.name
     out_dir = out_dir or (VECTOR_STORE_DIR / org_name)
 
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
+    _remove_existing_index(out_dir, org_name)
 
     if not files:
         print(f"[{org_name}] skipped: no source files.")

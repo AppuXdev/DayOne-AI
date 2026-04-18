@@ -20,7 +20,22 @@ def load_app_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Missing configuration file: {path}")
     with path.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
+        config = yaml.safe_load(handle) or {}
+
+    # streamlit-authenticator v0.4.x expects these keys on each user record.
+    usernames = (
+        config.get("credentials", {})
+        .get("usernames", {})
+        if isinstance(config, dict)
+        else {}
+    )
+    if isinstance(usernames, dict):
+        for record in usernames.values():
+            if isinstance(record, dict):
+                record.setdefault("failed_login_attempts", 0)
+                record.setdefault("logged_in", False)
+
+    return config
 
 
 def save_app_config(path: Path, config: Dict[str, Any]) -> None:

@@ -901,6 +901,7 @@ def main() -> None:
         cookie_key=config.get("cookie", {}).get("key", "change-this-key"),
         cookie_expiry_days=config.get("cookie", {}).get("expiry_days", 30),
         preauthorized=config.get("preauthorized"),
+        auto_hash=False,
     )
 
     if st.session_state.get("authentication_status") is not True:
@@ -911,7 +912,7 @@ def main() -> None:
                 st.caption("Secure multi-tenant HR onboarding assistant")
                 authenticator.login(fields={"Form name": "Sign in"})
 
-    if st.session_state.get("authentication_status") == True:
+    if st.session_state.get("authentication_status") is True:
         username = str(st.session_state.get("username", "")).strip()
         name = st.session_state.get("name")
 
