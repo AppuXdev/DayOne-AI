@@ -52,7 +52,7 @@
 - **Output**:
   - `org_acme`: 9 vectors (from CSVs + 2 PDFs)
   - `org_globex`: 9 vectors (from CSVs + 2 PDFs)
-- **FAISS Stores**: Updated in `vector_store/org_*/` directories
+- **Vector Store**: Updated in PostgreSQL `embeddings` table per tenant
 
 ### 6. ✅ Auto-Ingest Watcher Testing Ready
 - **Status**: READY FOR TESTING
@@ -69,7 +69,7 @@
 - **Status**: DOCUMENTED
 - **Current Setup**:
   - Embeddings cached per session via `@st.cache_resource`
-  - FAISS index cached for each org
+  - Tenant embeddings persisted in PostgreSQL/pgvector
   - Chat history in `st.session_state`
 - **Recommendation**: Monitor with `streamlit run app.py --logger.level=debug`
 
@@ -124,8 +124,8 @@
 | `data/org_acme/company_policies.pdf` | Created | Company policies |
 | `data/org_globex/employee_handbook_extended.pdf` | Created | Extended handbook |
 | `data/org_globex/career_development.pdf` | Created | Career development info |
-| `vector_store/org_acme/` | Rebuilt | 9 vectors (CSVs + PDFs) |
-| `vector_store/org_globex/` | Rebuilt | 9 vectors (CSVs + PDFs) |
+| `embeddings (org_acme)` | Refreshed | 9 vectors (CSVs + PDFs) |
+| `embeddings (org_globex)` | Refreshed | 9 vectors (CSVs + PDFs) |
 
 ---
 
@@ -146,7 +146,7 @@
 
 Your DayOne AI app is now production-ready with:
 - Secure authentication & password reset
-- Multi-tenant isolation with org-specific indexes
+- Multi-tenant isolation with org-specific embeddings
 - Rich HR documentation (PDFs + CSVs)
 - Automated ingestion with file watching
 - Professional UI with premium branding

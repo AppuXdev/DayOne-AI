@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Sequence
 import streamlit as st
 import streamlit_authenticator as stauth
 from dotenv import load_dotenv
-from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import HumanMessage, SystemMessage
@@ -20,7 +19,14 @@ from pydantic import SecretStr
 
 from chat_memory import ConversationHistory
 from ingest import rebuild_organization_index
-from retriever import HybridRetriever, RetrievalResult, USE_RERANKER, CONF_LOW, confidence_label
+from retriever import (
+    HybridRetriever,
+    RetrievalResult,
+    USE_RERANKER,
+    CONF_LOW,
+    confidence_label,
+    build_pgvector_hybrid_retriever,
+)
 from user_admin import (
     ROLE_ADMIN,
     ROLE_EMPLOYEE,
@@ -35,7 +41,6 @@ from user_admin import (
 
 ROOT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT_DIR / "config.yaml"
-VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
 ASSETS_DIR = ROOT_DIR / "assets"
 DATA_DIR = ROOT_DIR / "data"
 LOGS_DIR = ROOT_DIR / "logs"
@@ -284,38 +289,10 @@ def reset_invalid_auth_state() -> None:
     st.session_state.current_username = None
 
 
-def compute_org_signature(org_id: str) -> str:
-    org_dir = DATA_DIR / org_id
-    if not org_dir.exists():
-        return "missing"
-
-    signatures: List[str] = []
-    for file_path in sorted(org_dir.rglob("*.pdf")) + sorted(org_dir.rglob("*.csv")):
-        stat = file_path.stat()
-        signatures.append(f"{file_path.relative_to(org_dir)}:{stat.st_mtime_ns}:{stat.st_size}")
-
-    return "|".join(signatures) if signatures else "empty"
-
-
-@st.cache_resource(show_spinner=False)
-def load_vector_store_for_org(org_id: str, org_signature: str) -> Optional[FAISS]:
-    if org_signature in {"missing", "empty"}:
-        return None
-
-    org_store = VECTOR_STORE_DIR / org_id
-    try:
-        return FAISS.load_local(
-            str(org_store),
-            load_embeddings(),
-            allow_dangerous_deserialization=True,
-        )
-    except Exception:
-        return None
-
-
-def build_hybrid_retriever(vector_store: FAISS) -> HybridRetriever:
-    return HybridRetriever(
-        vector_store=vector_store,
+def build_hybrid_retriever(org_id: str) -> HybridRetriever:
+    return build_pgvector_hybrid_retriever(
+        organization=org_id,
+        tenant_id=None,
         embeddings=load_embeddings(),
         use_reranker=USE_RERANKER,
     )
@@ -441,7 +418,6 @@ def _build_justification(result: RetrievalResult, sources: List[str]) -> List[di
 
 
 def run_rag_query(
-    vector_store: Optional[FAISS],
     prompt: str,
     memory: ConversationHistory,
     username: str,
@@ -451,14 +427,14 @@ def run_rag_query(
 
     Returns: (answer, sources, confidence, conflict_detected, justification)
     """
-    if vector_store is None:
+    rewritten = rewrite_query(prompt, memory)
+    try:
+        retriever = build_hybrid_retriever(org_id)
+    except Exception:
         return (
             "Your organisation's knowledge base is currently empty. Please contact HR.",
             [], 0.0, False, [],
         )
-
-    rewritten = rewrite_query(prompt, memory)
-    retriever = build_hybrid_retriever(vector_store)
 
     with st.spinner("Searching policies..."):
         result: RetrievalResult = retriever.retrieve(rewritten)
@@ -709,7 +685,6 @@ def render_admin_portal(config: dict, username: str, org_id: str) -> None:
         with st.status("Rebuilding tenant knowledge index…", expanded=True) as rebuild_status:
             st.write("📄 Parsing and chunking documents…")
             rebuild_organization_index(target_dir, load_embeddings())
-            load_vector_store_for_org.clear()
             rebuild_status.update(
                 label=f"✅ Index rebuilt for **{upload_org}** ({len(saved)} file(s))",
                 state="complete",
@@ -760,12 +735,12 @@ def _render_justification(justification: List[dict], used_reranker: bool) -> Non
     ):
         if used_reranker:
             st.caption(
-                f"Retrieved {12} candidates via BM25+FAISS→RRF, "
+                f"Retrieved {12} candidates via BM25+pgvector→RRF, "
                 f"then cross-encoder reranked to top {len(justification)}. "
                 "\u2191N = promoted N positions by reranker."
             )
         else:
-            st.caption("Reranker OFF — BM25+FAISS→RRF fusion only. Score = BM25 score.")
+            st.caption("Reranker OFF — BM25+pgvector→RRF fusion only. Score = BM25 score.")
 
         for rec in justification:
             change = rec["rank_change"]
@@ -849,7 +824,6 @@ def render_employee_chat(authenticator: stauth.Authenticate, org_id: str) -> Non
         st.markdown(normalized_prompt)
 
     answer, sources, confidence, conflict, justification = run_rag_query(
-        st.session_state.get("vector_store"),
         normalized_prompt,
         st.session_state.memory,
         username,
@@ -931,10 +905,7 @@ def main() -> None:
             st.session_state.current_org = org_id
             st.session_state.current_username = username
 
-        org_signature = compute_org_signature(org_id)
-        vector_store = load_vector_store_for_org(org_id, org_signature)
-        st.session_state.vector_store = vector_store
-        st.session_state.kb_missing = vector_store is None
+        st.session_state.kb_missing = False
 
         st.caption(f"Signed in as {name or username} | Org: {org_id} | Role: {user_role}")
 

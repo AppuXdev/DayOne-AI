@@ -1,4 +1,4 @@
-"""Tenant-aware ingestion pipeline for DayOne AI (CSV/PDF -> FAISS per org).
+"""Tenant-aware ingestion pipeline for DayOne AI (CSV/PDF -> pgvector per org).
 
 Document versioning
 -------------------
@@ -18,22 +18,17 @@ import hashlib
 import json
 import os
 import pickle
-import stat
-import shutil
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_community.document_loaders import CSVLoader, PyPDFLoader
-from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ROOT_DIR / "data"
-VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 TENANT_MAX_CHUNKS: int = int(os.getenv("TENANT_MAX_CHUNKS", "50000"))
 
@@ -130,50 +125,12 @@ def save_chunk_cache(org_dir: Path, cache: Dict[str, List]) -> None:
         pickle.dump(cache, fh)
 
 
-def _remove_existing_index(index_dir: Path, org_name: str) -> None:
-    """Remove an existing FAISS index directory with Windows-friendly retries.
-
-    On Windows, `PermissionError` commonly occurs when files are briefly held by
-    OneDrive sync, antivirus, or an active app process (API/UI/watcher).
-    """
-    if not index_dir.exists():
-        return
-
-    def _on_rm_error(func, path, _exc_info):
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-
-    last_error: Optional[Exception] = None
-    for attempt in range(1, 6):
-        try:
-            shutil.rmtree(index_dir, onerror=_on_rm_error)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            if attempt < 5:
-                time.sleep(0.4 * attempt)
-                continue
-            raise RuntimeError(
-                f"[{org_name}] could not replace index at {index_dir}. "
-                "The directory appears locked by another process "
-                "(Streamlit/FastAPI/watcher/OneDrive). "
-                "Stop those processes and retry."
-            ) from exc
-        except Exception as exc:
-            last_error = exc
-            break
-
-    if last_error is not None:
-        raise RuntimeError(f"[{org_name}] failed to remove existing index at {index_dir}: {last_error}") from last_error
-
-
 def rebuild_organization_index(
     org_dir: Path,
     embeddings: Optional[HuggingFaceEmbeddings] = None,
-    out_dir: Optional[Path] = None,
     incremental: bool = True,
 ) -> None:
-    """Rebuild the FAISS vector index for a single organisation.
+    """Refresh the pgvector embedding snapshot for a single organisation.
 
     Incremental mode (default ON)
     ------------------------------
@@ -181,10 +138,9 @@ def rebuild_organization_index(
     Chunks for unchanged files are loaded from `.chunk_cache.pkl` instead
     of being re-parsed. Changed or new files are fully re-chunked.
 
-    Trade-off: the FAISS index is always rebuilt from all chunks (true
-    incremental FAISS merge requires careful docstore management and is
-    deferred). The benefit is that chunking — typically the slow step for
-    large PDFs — is skipped for unchanged files.
+    Trade-off: embeddings are replaced per tenant snapshot in one transaction.
+    The benefit is deterministic consistency between document set and vectors,
+    while still skipping expensive re-chunking for unchanged files.
 
     Chunking parameters
     -------------------
@@ -196,9 +152,6 @@ def rebuild_organization_index(
     # Exclude archive and hidden files from ingestion
     files = [f for f in files if "archive" not in f.parts and not f.name.startswith(".")]
     org_name = org_dir.name
-    out_dir = out_dir or (VECTOR_STORE_DIR / org_name)
-
-    _remove_existing_index(out_dir, org_name)
 
     if not files:
         print(f"[{org_name}] skipped: no source files.")
@@ -284,22 +237,31 @@ def rebuild_organization_index(
             # Drift detection is non-critical — log and continue
             print(f"[{org_name}] drift detection skipped: {exc}")
 
-    # FAISS Flat index (IndexFlatL2) — exact NN search. See README for trade-offs.
-    store = FAISS.from_documents(all_chunks, embeddings)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    store.save_local(str(out_dir))
+    if not os.getenv("DATABASE_URL", "").strip():
+        raise RuntimeError("DATABASE_URL is required for pgvector ingestion")
+
+    try:
+        from backend.services.embedding_db import replace_tenant_embeddings  # noqa: PLC0415
+
+        n_written = replace_tenant_embeddings(
+            organization=org_name,
+            chunks=all_chunks,
+            embedding_model=embeddings,
+        )
+        print(f"[{org_name}] pgvector refresh complete - {n_written} embedding row(s)")
+    except Exception as exc:
+        raise RuntimeError(f"[{org_name}] pgvector refresh failed: {exc}") from exc
 
     # Persist updated registry and cache
     if incremental:
         save_hash_registry(org_dir, new_registry)
         save_chunk_cache(org_dir, new_cache)
 
-    print(f"[{org_name}] index built - {store.index.ntotal} vectors -> {out_dir}")
+    print(f"[{org_name}] ingestion complete - {len(all_chunks)} chunk(s) processed")
 
 
 def build_all_organization_indexes() -> None:
     load_dotenv()
-    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
     embeddings = build_embeddings()
     org_dirs = list_org_dirs(DATA_DIR)
 

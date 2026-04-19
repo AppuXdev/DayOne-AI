@@ -2,29 +2,48 @@ import unittest
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from main import authenticate_user
+from main import authenticate_user_db_only
 
 
 class AuthenticationTests(unittest.TestCase):
     def test_employee_credentials_are_valid(self) -> None:
-        user = authenticate_user("john_doe", "password123")
+        with patch("main.auth_db.authenticate_user", return_value={
+            "username": "john_doe",
+            "organization": "org_acme",
+            "role": "employee",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+        }):
+            user = authenticate_user_db_only("john_doe", "password123", "org_acme")
         self.assertEqual(user.username, "john_doe")
         self.assertEqual(user.organization, "org_acme")
         self.assertEqual(user.role, "employee")
 
     def test_admin_credentials_are_valid(self) -> None:
-        user = authenticate_user("admin_acme", "password123")
+        with patch("main.auth_db.authenticate_user", return_value={
+            "username": "admin_acme",
+            "organization": "org_acme",
+            "role": "admin",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+        }):
+            user = authenticate_user_db_only("admin_acme", "password123", "org_acme")
         self.assertEqual(user.username, "admin_acme")
         self.assertEqual(user.organization, "org_acme")
         self.assertEqual(user.role, "admin")
 
     def test_invalid_password_is_rejected(self) -> None:
-        with self.assertRaises(HTTPException) as ctx:
-            authenticate_user("john_doe", "wrong-password")
+        with patch("main.auth_db.authenticate_user", return_value=None):
+            with self.assertRaises(HTTPException) as ctx:
+                authenticate_user_db_only("john_doe", "wrong-password", "org_acme")
         self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_missing_organization_is_rejected(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            authenticate_user_db_only("john_doe", "password123", "")
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 class RunScriptSmokeTests(unittest.TestCase):

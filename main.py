@@ -1,7 +1,7 @@
 """DayOne AI FastAPI backend.
 
 Headless API for multi-tenant HR RAG with JWT auth, LangChain + Groq chat,
-and admin uploads that rebuild per-organization FAISS indexes.
+and admin uploads that refresh tenant-scoped pgvector embeddings.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
+import tempfile
 import time
 import threading
 from contextlib import asynccontextmanager
@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
+from uuid import uuid4
 
-from bcrypt import checkpw
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,34 +26,31 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from langchain.schema import HumanMessage, SystemMessage
-from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from chat_memory import ConversationHistory
-from ingest import archive_file_if_exists, rebuild_organization_index
-from retriever import HybridRetriever, RetrievalResult, USE_RERANKER, CONF_LOW, confidence_label
+from ingest import rebuild_organization_index
+from retriever import (
+    HybridRetriever,
+    RetrievalResult,
+    USE_RERANKER,
+    CONF_LOW,
+    confidence_label,
+    build_pgvector_hybrid_retriever,
+)
 from feedback import get_feedback_store
 from drift import load_drift_report, DriftReport
-from user_admin import (
-    ROLE_ADMIN,
-    ROLE_EMPLOYEE,
-    clone_config,
-    create_user_record,
-    delete_user_record,
-    load_app_config,
-    save_app_config,
-    serialize_user,
-    update_user_record,
-)
+from backend.services import auth_db
+from backend.services import document_db
+from backend.services import storage_minio
+from backend.services import user_db
 
 load_dotenv()
 
 ROOT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = ROOT_DIR / "config.yaml"
 DATA_DIR = ROOT_DIR / "data"
-VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
 LOGS_DIR = ROOT_DIR / "logs"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MODEL_NAME = os.getenv("DAYONE_GROQ_MODEL", "llama-3.1-8b-instant")
@@ -67,6 +64,9 @@ CORS_ORIGINS = [
 ]
 TENANT_RATE_LIMIT_RPM: int = int(os.getenv("TENANT_RATE_LIMIT_RPM", "30"))
 TENANT_UPLOAD_LIMIT_PER_DAY: int = int(os.getenv("TENANT_UPLOAD_LIMIT_PER_DAY", "20"))
+STORAGE_RECONCILE_INTERVAL_SECONDS: int = int(os.getenv("STORAGE_RECONCILE_INTERVAL_SECONDS", "300"))
+ROLE_ADMIN = "admin"
+ROLE_EMPLOYEE = "employee"
 
 SYSTEM_PROMPT = (
     "You are DayOne AI, a professional HR onboarding assistant. "
@@ -81,8 +81,31 @@ SYSTEM_PROMPT = (
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        if auth_db.is_enabled():
+            storage_minio.ensure_bucket()
+    except Exception:
+        # Keep boot resilient; failures surface on first upload operation.
+        pass
+
+    stop_event = threading.Event()
+
+    def _reconcile_loop() -> None:
+        if STORAGE_RECONCILE_INTERVAL_SECONDS <= 0:
+            return
+        while not stop_event.wait(STORAGE_RECONCILE_INTERVAL_SECONDS):
+            if not auth_db.is_enabled():
+                continue
+            try:
+                for org in document_db.list_organizations_with_documents():
+                    _reconcile_storage_for_tenant(org)
+            except Exception:
+                continue
+
+    thread = threading.Thread(target=_reconcile_loop, name="storage-reconcile", daemon=True)
+    thread.start()
     yield
+    stop_event.set()
 
 
 app = FastAPI(title="DayOne AI API", version="1.0.0", lifespan=lifespan)
@@ -160,6 +183,7 @@ def _check_upload_limit(org_id: str) -> None:
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1)
     password: str = Field(min_length=1)
+    organization: str = Field(min_length=1)
 
 
 class LoginResponse(BaseModel):
@@ -209,6 +233,12 @@ class UploadResponse(BaseModel):
     drift_summary: Optional[str] = None
 
 
+class ReconcileResponse(BaseModel):
+    organization: str
+    missing_for_db: int
+    orphan_deleted: int
+
+
 class FeedbackRequest(BaseModel):
     query_id: str = Field(min_length=1)
     rating: str = Field(pattern=r"^(up|down)$")
@@ -223,6 +253,7 @@ class TokenPayload(BaseModel):
     sub: str
     username: str
     organization: str
+    tenant_id: Optional[str] = None
     role: str
     exp: Optional[int] = None
 
@@ -235,6 +266,7 @@ class InMemoryUser(BaseModel):
     name: str = ""
     email: str = ""
     organization: str
+    tenant_id: Optional[str] = None
     role: str = "employee"
     password: str
 
@@ -263,31 +295,8 @@ class UserUpdateRequest(BaseModel):
 
 
 @lru_cache(maxsize=1)
-def load_config() -> Dict[str, Any]:
-    return load_app_config(CONFIG_PATH)
-
-
-@lru_cache(maxsize=1)
 def get_jwt_secret() -> str:
-    config = load_config()
-    cookie = config.get("cookie", {}) if isinstance(config, dict) else {}
-    fallback = str(cookie.get("key", "change-this-secret-key"))
-    return JWT_SECRET_KEY or fallback
-
-
-@lru_cache(maxsize=1)
-def get_users() -> Dict[str, Dict[str, Any]]:
-    config = load_config()
-    credentials = config.get("credentials", {}) if isinstance(config, dict) else {}
-    usernames = credentials.get("usernames", {}) if isinstance(credentials, dict) else {}
-    return usernames if isinstance(usernames, dict) else {}
-
-
-def persist_config(config: Dict[str, Any]) -> None:
-    save_app_config(CONFIG_PATH, config)
-    load_config.cache_clear()
-    get_jwt_secret.cache_clear()
-    get_users.cache_clear()
+    return JWT_SECRET_KEY or "change-this-secret-key"
 
 
 def require_admin_user(current_user: TokenPayload) -> None:
@@ -307,12 +316,13 @@ def sanitize_filename(filename: str) -> str:
     return Path(filename).name.replace(" ", "_")
 
 
-def create_access_token(*, username: str, organization: str, role: str) -> LoginResponse:
+def create_access_token(*, username: str, organization: str, role: str, tenant_id: Optional[str] = None) -> LoginResponse:
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": username,
         "username": username,
         "organization": organization,
+        "tenant_id": tenant_id,
         "role": role,
         "exp": expire,
     }
@@ -326,36 +336,31 @@ def create_access_token(*, username: str, organization: str, role: str) -> Login
     )
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    try:
-        return checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
-    except Exception:
-        return False
+def authenticate_user_db_only(username: str, password: str, organization: str) -> InMemoryUser:
+    if not organization.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="organization is required")
 
-
-def authenticate_user(username: str, password: str) -> InMemoryUser:
-    users = get_users()
-    record = users.get(username)
-    if not record:
+    db_user = auth_db.authenticate_user(
+        username=username,
+        password=password,
+        organization=organization,
+    )
+    if db_user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-    stored_password = str(record.get("password", ""))
-    if not verify_password(password, stored_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-    organization = str(record.get("organization", "")).strip()
-    role = str(record.get("role", "employee") or "employee").strip().lower()
-    if not organization:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User has no organization assigned")
 
     return InMemoryUser(
-        username=username,
-        name=str(record.get("name", "")),
-        email=str(record.get("email", "")),
-        organization=organization,
-        role=role,
-        password=stored_password,
+        username=db_user["username"],
+        name="",
+        email="",
+        organization=db_user["organization"],
+        tenant_id=db_user.get("tenant_id"),
+        role=db_user["role"],
+        password="",
     )
+
+
+# In-process chat history store (to be replaced with Redis in step 5).
+conversation_memories: Dict[str, ConversationHistory] = {}
 
 
 def decode_token(token: str) -> TokenPayload:
@@ -372,35 +377,57 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
     return decode_token(credentials.credentials)
 
 
-@lru_cache(maxsize=64)
-def load_vector_store_for_org(org_id: str, org_signature: str) -> Optional[FAISS]:
-    if org_signature in {"missing", "empty"}:
-        return None
+def _rebuild_index_from_minio(organization: str) -> None:
+    """Refresh tenant pgvector embeddings from active+processing MinIO documents."""
+    docs = document_db.list_documents_for_tenant(
+        organization,
+        statuses=[
+            document_db.STATUS_UPLOADING,
+            document_db.STATUS_PROCESSING,
+            document_db.STATUS_ACTIVE,
+        ],
+    )
+    if not docs:
+        raise RuntimeError("No documents available for ingestion")
 
-    org_store = VECTOR_STORE_DIR / org_id
-    if not org_store.exists():
-        return None
+    with tempfile.TemporaryDirectory(prefix=f"dayone-{organization}-") as tmp:
+        org_dir = Path(tmp) / organization
+        org_dir.mkdir(parents=True, exist_ok=True)
+        for d in docs:
+            blob = storage_minio.get_bytes(d["object_key"])
+            local_name = f"v{d['version']}__{sanitize_filename(d['filename'])}"
+            (org_dir / local_name).write_bytes(blob)
 
-    try:
-        return FAISS.load_local(
-            str(org_store),
-            load_embeddings(),
-            allow_dangerous_deserialization=True,
+        rebuild_organization_index(
+            org_dir=org_dir,
+            embeddings=load_embeddings(),
+            incremental=False,
         )
-    except Exception:
-        return None
 
 
-def compute_org_signature(org_id: str) -> str:
-    org_dir = DATA_DIR / org_id
-    if not org_dir.exists():
-        return "missing"
+def _reconcile_storage_for_tenant(organization: str) -> Dict[str, int]:
+    """Resolve MinIO/DB mismatches to avoid orphaned object drift."""
+    db_rows = document_db.list_documents_for_tenant(organization)
+    expected = {r["object_key"] for r in db_rows if r.get("object_key")}
 
-    signatures: List[str] = []
-    for file_path in sorted(org_dir.rglob("*.pdf")) + sorted(org_dir.rglob("*.csv")):
-        stat = file_path.stat()
-        signatures.append(f"{file_path.relative_to(org_dir)}:{stat.st_mtime_ns}:{stat.st_size}")
-    return "|".join(signatures) if signatures else "empty"
+    missing_for_db = 0
+    for row in db_rows:
+        key = row.get("object_key", "")
+        if key and not storage_minio.exists(key):
+            missing_for_db += 1
+            document_db.set_documents_status([row["id"]], document_db.STATUS_FAILED, "Object missing in MinIO")
+
+    prefix = f"{organization}/"
+    orphan_deleted = 0
+    for object_key in storage_minio.list_keys(prefix=prefix):
+        if object_key not in expected:
+            storage_minio.delete_object(object_key)
+            orphan_deleted += 1
+
+    return {
+        "missing_for_db": missing_for_db,
+        "orphan_deleted": orphan_deleted,
+    }
 
 
 def get_memory_key(username: str, organization: str) -> str:
@@ -417,12 +444,14 @@ def get_or_create_memory(username: str, organization: str) -> ConversationHistor
 
 
 def build_hybrid_retriever(
-    vector_store: FAISS,
     embeddings: HuggingFaceEmbeddings,
+    organization: str,
+    tenant_id: Optional[str],
     source_weights: Optional[Dict[str, float]] = None,
 ) -> HybridRetriever:
-    return HybridRetriever(
-        vector_store=vector_store,
+    return build_pgvector_hybrid_retriever(
+        organization=organization,
+        tenant_id=tenant_id,
         embeddings=embeddings,
         use_reranker=USE_RERANKER,
         source_weights=source_weights,
@@ -496,19 +525,28 @@ def serialize_source_document(document: Any) -> SourceMetadata:
 
 @app.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest) -> LoginResponse:
-    user = authenticate_user(payload.username.strip(), payload.password)
-    return create_access_token(username=user.username, organization=user.organization, role=user.role)
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
+    user = authenticate_user_db_only(
+        payload.username.strip(),
+        payload.password,
+        payload.organization.strip(),
+    )
+    return create_access_token(
+        username=user.username,
+        organization=user.organization,
+        role=user.role,
+        tenant_id=user.tenant_id,
+    )
 
 
 @app.get("/api/admin/users", response_model=List[ManagedUser])
 def list_admin_users(current_user: TokenPayload = Depends(get_current_user)) -> List[ManagedUser]:
     require_admin_user(current_user)
-    org_users: List[ManagedUser] = []
-    for username, record in get_users().items():
-        if str(record.get("organization", "")).strip() != current_user.organization:
-            continue
-        org_users.append(ManagedUser(**serialize_user(username, record)))
-    return sorted(org_users, key=lambda user: user.username.lower())
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
+    org_users = user_db.list_users_for_org(current_user.organization)
+    return [ManagedUser(**u) for u in org_users]
 
 
 @app.post("/api/admin/users", response_model=ManagedUser, status_code=status.HTTP_201_CREATED)
@@ -517,13 +555,13 @@ def create_admin_user(
     current_user: TokenPayload = Depends(get_current_user),
 ) -> ManagedUser:
     require_admin_user(current_user)
-    config = clone_config(load_config())
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
     try:
-        created = create_user_record(
-            config=config,
+        created = user_db.create_user(
+            organization=current_user.organization,
             username=payload.username,
             password=payload.password,
-            organization=current_user.organization,
             role=payload.role,
             name=payload.name,
             email=payload.email,
@@ -531,7 +569,6 @@ def create_admin_user(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    persist_config(config)
     return ManagedUser(**created)
 
 
@@ -542,23 +579,20 @@ def update_admin_user(
     current_user: TokenPayload = Depends(get_current_user),
 ) -> ManagedUser:
     require_admin_user(current_user)
-    config = clone_config(load_config())
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
     try:
-        updated = update_user_record(
-            config=config,
+        updated = user_db.update_user(
+            organization=current_user.organization,
             username=username,
-            current_organization=current_user.organization,
             name=payload.name,
             email=payload.email,
             role=payload.role,
             password=payload.password,
         )
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    persist_config(config)
     return ManagedUser(**updated)
 
 
@@ -568,22 +602,19 @@ def delete_admin_user(
     current_user: TokenPayload = Depends(get_current_user),
 ) -> Response:
     require_admin_user(current_user)
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
     if username.strip() == current_user.username:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own admin account")
 
-    config = clone_config(load_config())
     try:
-        delete_user_record(
-            config=config,
+        user_db.delete_user(
+            organization=current_user.organization,
             username=username,
-            current_organization=current_user.organization,
         )
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    persist_config(config)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -601,20 +632,12 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     organization = str(claims.organization).strip()
     username = str(claims.username).strip()
     role = str(claims.role).strip().lower()
+    tenant_id = (claims.tenant_id or "").strip() or None
 
     if not organization or not username:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing user context")
     if not payload.prompt.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt cannot be empty")
-
-    org_signature = compute_org_signature(organization)
-    vector_store = load_vector_store_for_org(organization, org_signature)
-    if vector_store is None:
-        return ChatResponse(
-            answer="Your organisation's knowledge base is currently empty. Please contact HR.",
-            sources=[], username=username, organization=organization,
-            role=role, model=MODEL_NAME, status="empty_index",
-        )
 
     embeddings = load_embeddings()
     llm = ChatGroq(model=MODEL_NAME, temperature=0, api_key=SecretStr(os.getenv("GROQ_API_KEY", "")))
@@ -626,7 +649,12 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     # Hybrid retrieval — apply feedback-weighted source reputation
     t0 = time.perf_counter()
     source_weights = get_feedback_store().get_source_weights(organization)
-    retriever = build_hybrid_retriever(vector_store, embeddings, source_weights=source_weights)
+    retriever = build_hybrid_retriever(
+        embeddings,
+        organization,
+        tenant_id,
+        source_weights=source_weights,
+    )
     result: RetrievalResult = retriever.retrieve(rewritten)
     docs = result.final_docs
     confidence = result.confidence
@@ -726,41 +754,79 @@ async def admin_upload(
     if target_org != current_user.organization:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins can only upload to their own organisation")
 
-    target_dir = DATA_DIR / target_org
-    target_dir.mkdir(parents=True, exist_ok=True)
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
 
+    uploaded_doc_ids: List[str] = []
     saved_files: List[str] = []
     for upload in files:
         filename = sanitize_filename(upload.filename or "uploaded_document")
         suffix = Path(filename).suffix.lower()
         if suffix not in {".pdf", ".csv"}:
             continue
-        destination = target_dir / filename
-        # Archive existing file before overwriting (document versioning)
-        archive_file_if_exists(destination)
+        _check_upload_limit(target_org)
         content = await upload.read()
-        destination.write_bytes(content)
+        if not content:
+            continue
+
+        object_key = f"{target_org}/{uuid4().hex}/{filename}"
+        content_type = "application/pdf" if suffix == ".pdf" else "text/csv"
+
+        # Two-phase consistency: upload first, then DB insert; rollback object on DB failure.
+        storage_minio.put_bytes(object_key, content, content_type=content_type)
+        try:
+            created = document_db.create_document_row(
+                organization=target_org,
+                filename=filename,
+                object_key=object_key,
+                uploaded_by_username=current_user.username,
+                status=document_db.STATUS_UPLOADING,
+            )
+        except Exception:
+            storage_minio.delete_object(object_key)
+            raise
+
+        uploaded_doc_ids.append(created["id"])
         saved_files.append(filename)
 
     if not saved_files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No supported files uploaded")
 
-    rebuild_organization_index(target_dir, load_embeddings())
-    load_vector_store_for_org.cache_clear()
-    conversation_memories.pop(get_memory_key(current_user.username, target_org), None)
+    try:
+        document_db.set_documents_status(uploaded_doc_ids, document_db.STATUS_PROCESSING)
+        _rebuild_index_from_minio(target_org)
+        document_db.set_documents_status(uploaded_doc_ids, document_db.STATUS_ACTIVE)
+    except Exception as exc:
+        document_db.set_documents_status(uploaded_doc_ids, document_db.STATUS_FAILED, str(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ingestion failed: {exc}") from exc
 
-    # Read drift summary if available (produced by ingest)
-    drift_summary: Optional[str] = None
-    drift = load_drift_report(target_org, DATA_DIR)
-    if drift is not None:
-        drift_summary = drift.summary
+    reconciliation = _reconcile_storage_for_tenant(target_org)
+
+    conversation_memories.pop(get_memory_key(current_user.username, target_org), None)
 
     return UploadResponse(
         organization=target_org,
         saved_files=saved_files,
         rebuilt=True,
-        message=f"Rebuilt {target_org} index with {len(saved_files)} file(s).",
-        drift_summary=drift_summary,
+        message=(
+            f"Uploaded {len(saved_files)} file(s), rebuilt index, "
+            f"reconciled storage (missing={reconciliation['missing_for_db']}, "
+            f"deleted_orphans={reconciliation['orphan_deleted']})."
+        ),
+        drift_summary=None,
+    )
+
+
+@app.post("/api/admin/storage/reconcile", response_model=ReconcileResponse)
+def reconcile_storage(
+    current_user: TokenPayload = Depends(get_current_user),
+) -> ReconcileResponse:
+    require_admin_user(current_user)
+    result = _reconcile_storage_for_tenant(current_user.organization)
+    return ReconcileResponse(
+        organization=current_user.organization,
+        missing_for_db=result["missing_for_db"],
+        orphan_deleted=result["orphan_deleted"],
     )
 
 
@@ -830,6 +896,7 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
     organization = str(claims.organization).strip()
     username = str(claims.username).strip()
     role = str(claims.role).strip().lower()
+    tenant_id = (claims.tenant_id or "").strip() or None
 
     async def event_stream() -> AsyncIterator[str]:
         import asyncio
@@ -839,19 +906,18 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
             yield f'data: {{"type": "error", "detail": "{exc.detail}"}}\n\n'
             return
 
-        org_signature = compute_org_signature(organization)
-        vector_store = load_vector_store_for_org(organization, org_signature)
-        if vector_store is None:
-            yield 'data: {"type": "error", "detail": "Knowledge base is empty"}\n\n'
-            return
-
         embeddings = load_embeddings()
         llm = ChatGroq(model=MODEL_NAME, temperature=0, api_key=SecretStr(os.getenv("GROQ_API_KEY", "")))
         memory = get_or_create_memory(username, organization)
         rewritten = rewrite_query(payload.prompt.strip(), memory, llm)
 
         source_weights = get_feedback_store().get_source_weights(organization)
-        retriever = build_hybrid_retriever(vector_store, embeddings, source_weights=source_weights)
+        retriever = build_hybrid_retriever(
+            embeddings,
+            organization,
+            tenant_id,
+            source_weights=source_weights,
+        )
         result: RetrievalResult = retriever.retrieve(rewritten)
         docs = result.final_docs
         confidence = result.confidence
@@ -955,13 +1021,3 @@ def get_drift_report(
         )
     from dataclasses import asdict
     return asdict(drift)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
-    yield
-
-
-app.router.lifespan_context = lifespan

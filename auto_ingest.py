@@ -5,7 +5,7 @@ Run this script in a separate terminal alongside the Streamlit app:
     python auto_ingest.py
 
 It watches data/org_*/ folders for PDF and CSV changes and rebuilds only the
-affected organization's FAISS index under vector_store/<org_id>/.
+affected organization's pgvector embeddings.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ DATA_DIR = ROOT_DIR / "data"
 
 
 class OrganizationChangeHandler(FileSystemEventHandler):
-    """Debounced handler that rebuilds only the changed organization index."""
+    """Debounced handler that refreshes only the changed organization embeddings."""
 
     def __init__(self, debounce_seconds: float = 2.0) -> None:
         self.debounce_seconds = debounce_seconds
@@ -58,11 +58,10 @@ class OrganizationChangeHandler(FileSystemEventHandler):
     def _rebuild(self, org_id: str) -> None:
         org_dir = DATA_DIR / org_id
         if not org_dir.exists():
-            ingest.remove_vector_store_for_org(org_id)
-            print(f"[{org_id}] source folder removed; index deleted.")
+            print(f"[{org_id}] source folder removed; skipping embedding refresh.")
             return
 
-        print(f"[{org_id}] rebuilding index...")
+        print(f"[{org_id}] refreshing embeddings...")
         ingest.rebuild_organization_index(org_dir, self.embeddings)
 
     def _maybe_handle(self, event_path: str) -> None:

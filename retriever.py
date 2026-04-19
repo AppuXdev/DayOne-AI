@@ -1,7 +1,7 @@
 """Hybrid retrieval for DayOne AI.
 
 Architecture:
-  1. Dense retrieval  — FAISS (all-MiniLM-L6-v2 embeddings)
+    1. Dense retrieval  — pgvector cosine ANN
   2. Sparse retrieval — BM25Okapi on same corpus
   3. Fusion           — Reciprocal Rank Fusion (RRF, k=60)
   4. Reranking        — cross-encoder/ms-marco-MiniLM-L-6-v2 (toggleable)
@@ -16,11 +16,14 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
 from rank_bm25 import BM25Okapi
+from sqlalchemy import text
+
+from backend.services.auth_db import require_engine
 
 # ---------------------------------------------------------------------------
 # Config — override via environment variable
@@ -28,6 +31,9 @@ from rank_bm25 import BM25Okapi
 # Trade-off: reranker adds ~200-400 ms CPU latency but improves precision by
 # ~10-16 pp on our benchmark (see eval.py results). Default ON for correctness.
 USE_RERANKER: bool = os.getenv("DAYONE_USE_RERANKER", "1") != "0"
+PGVECTOR_PROBES: int = int(os.getenv("DAYONE_PGVECTOR_PROBES", "10"))
+EMBEDDING_DIM: int = int(os.getenv("DAYONE_EMBEDDING_DIM", "384"))
+ASSERT_TENANT_ISOLATION: bool = os.getenv("DAYONE_ASSERT_TENANT_ISOLATION", "0") == "1"
 
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # Retrieve this many candidates before reranking. Wider net = better recall
@@ -93,58 +99,57 @@ def _sigmoid(x: float) -> float:
     return float(1.0 / (1.0 + np.exp(-x)))
 
 
-class HybridRetriever:
-    """BM25 + FAISS hybrid retriever with optional cross-encoder reranking.
+def _normalize_vector(vec: List[float]) -> List[float]:
+    arr = np.array(vec, dtype=np.float32)
+    if arr.shape[0] != EMBEDDING_DIM:
+        raise ValueError(
+            f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, got {arr.shape[0]}"
+        )
+    norm = float(np.linalg.norm(arr))
+    if norm <= 1e-12:
+        raise ValueError("Zero-norm embedding encountered")
+    arr = arr / norm
+    return arr.tolist()
 
-    Why hybrid instead of pure dense?
-    Dense retrieval (FAISS) struggles with exact keyword matches such as
-    policy form numbers, HR codes, and proper nouns. BM25 handles these
-    well. RRF fusion gets the best of both without requiring score
-    normalisation across incompatible scales.
-    """
+
+class HybridRetriever:
+    """BM25 + pgvector hybrid retriever with optional cross-encoder reranking."""
 
     def __init__(
         self,
-        vector_store: FAISS,
         embeddings: Any,
+        docs: List[Any],
+        dense_indices_fn: Callable[[str, int], List[int]],
         use_reranker: bool = USE_RERANKER,
         source_weights: Optional[Dict[str, float]] = None,
     ) -> None:
-        self.vector_store = vector_store
         self.embeddings = embeddings
         self.use_reranker = use_reranker
+        self._dense_indices_fn = dense_indices_fn
         # Optional per-source reputation weights from FeedbackStore.
         # Keys are bare filenames (e.g. "handbook.pdf"); values centred at 1.0.
         self._source_weights: Dict[str, float] = source_weights or {}
 
-        # Build ordered corpus aligned with FAISS internal indices.
-        # FAISS internal index i → index_to_docstore_id[i] → docstore doc.
-        n = vector_store.index.ntotal
-        self._docs: List[Any] = []
-        for i in range(n):
-            doc_id = vector_store.index_to_docstore_id[i]
-            self._docs.append(vector_store.docstore._dict[doc_id])
+        self._docs = docs
 
-        # BM25 on same corpus order — indices are directly comparable.
-        # Why BM25Okapi? It applies IDF and term-frequency saturation,
-        # outperforming plain TF-IDF for short query / long document settings.
-        corpus = [doc.page_content.lower().split() for doc in self._docs]
-        self._bm25 = BM25Okapi(corpus)
+        if self._docs:
+            corpus = [doc.page_content.lower().split() for doc in self._docs]
+            self._bm25: Optional[BM25Okapi] = BM25Okapi(corpus)
+        else:
+            self._bm25 = None
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _dense_indices(self, query: str, k: int) -> List[int]:
-        """Return FAISS internal indices for the top-k dense results."""
-        query_vec = np.array(
-            [self.embeddings.embed_query(query)], dtype=np.float32
-        )
-        _, faiss_indices = self.vector_store.index.search(query_vec, k)
-        return [int(i) for i in faiss_indices[0] if i >= 0]
+        """Return dense retrieval indices for the top-k results."""
+        return self._dense_indices_fn(query, k)
 
     def _sparse_indices(self, query: str, k: int) -> Tuple[List[int], "np.ndarray"]:
         """Return BM25-ranked indices and the full score array."""
+        if self._bm25 is None:
+            return [], np.array([], dtype=np.float32)
         tokens = query.lower().split()
         scores = self._bm25.get_scores(tokens)
         indices = list(np.argsort(scores)[::-1][:k])
@@ -198,6 +203,13 @@ class HybridRetriever:
         enabling the Answer Justification layer in the UI.
         """
         t0 = time.perf_counter()
+
+        if not self._docs:
+            return RetrievalResult(
+                final_docs=[], final_scores=[], confidence=0.0,
+                candidates=[], candidate_scores=[], latency_ms=0.0,
+                used_reranker=self.use_reranker,
+            )
 
         dense_idx = self._dense_indices(query, candidate_k)
         sparse_idx, bm25_scores = self._sparse_indices(query, candidate_k)
@@ -258,3 +270,95 @@ def confidence_label(score: float) -> str:
     if score >= CONF_LOW:
         return "medium"
     return "low"
+
+
+def build_pgvector_hybrid_retriever(
+    *,
+    organization: str,
+    tenant_id: Optional[str],
+    embeddings: Any,
+    use_reranker: bool = USE_RERANKER,
+    source_weights: Optional[Dict[str, float]] = None,
+) -> HybridRetriever:
+    """Build HybridRetriever backed by pgvector dense search and BM25 sparse search.
+
+    Retrieval contract remains unchanged; only dense storage backend differs.
+    """
+    engine = require_engine()
+
+    if tenant_id:
+        tenant_where = "e.tenant_id = CAST(:tenant_id AS uuid)"
+        tenant_params: Dict[str, Any] = {"tenant_id": tenant_id.strip()}
+    else:
+        # Eval and non-JWT contexts can still resolve tenant by name.
+        tenant_where = "e.tenant_id = (SELECT id FROM tenants WHERE lower(name)=lower(:organization) LIMIT 1)"
+        tenant_params = {"organization": organization.strip()}
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT e.id, e.chunk_text, e.metadata, e.tenant_id
+                FROM embeddings e
+                WHERE {tenant_where}
+                """
+            ),
+            tenant_params,
+        ).mappings().all()
+
+    if ASSERT_TENANT_ISOLATION and tenant_id:
+        expected_tenant = tenant_id.strip()
+        for row in rows:
+            row_tenant = str(row.get("tenant_id") or "").strip()
+            assert row_tenant == expected_tenant, "tenant leakage detected in pgvector corpus preload"
+
+    docs: List[Any] = []
+    id_to_index: Dict[str, int] = {}
+    for i, row in enumerate(rows):
+        metadata = row.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        docs.append(Document(page_content=str(row["chunk_text"]), metadata=metadata))
+        id_to_index[str(row["id"])] = i
+
+    def _dense_indices_pgvector(query: str, k: int) -> List[int]:
+        query_vec = _normalize_vector(embeddings.embed_query(query))
+        qv = "[" + ",".join(f"{float(v):.8f}" for v in query_vec) + "]"
+        with engine.connect() as conn:
+            # Apply ANN probe count for each connection used by retrieval.
+            conn.execute(text(f"SET ivfflat.probes = {max(PGVECTOR_PROBES, 1)}"))
+            hit_rows = conn.execute(
+                text(
+                    f"""
+                    SELECT e.id, e.tenant_id
+                    FROM embeddings e
+                    WHERE {tenant_where}
+                    ORDER BY e.embedding <=> CAST(:query_vector AS vector)
+                    LIMIT :k
+                    """
+                ),
+                {
+                    **tenant_params,
+                    "query_vector": qv,
+                    "k": int(k),
+                },
+            ).mappings().all()
+        if ASSERT_TENANT_ISOLATION and tenant_id:
+            expected_tenant = tenant_id.strip()
+            for row in hit_rows:
+                row_tenant = str(row.get("tenant_id") or "").strip()
+                assert row_tenant == expected_tenant, "tenant leakage detected in pgvector hit set"
+        indices: List[int] = []
+        for row in hit_rows:
+            idx = id_to_index.get(str(row["id"]))
+            if idx is not None:
+                indices.append(idx)
+        return indices
+
+    return HybridRetriever(
+        embeddings=embeddings,
+        docs=docs,
+        dense_indices_fn=_dense_indices_pgvector,
+        use_reranker=use_reranker,
+        source_weights=source_weights,
+    )

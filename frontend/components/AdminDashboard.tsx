@@ -764,7 +764,7 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
                 Upload HR documents
               </h2>
               <p style={{ margin: 0, fontSize: "0.875rem", color: "#64748b", lineHeight: 1.6 }}>
-                Drag and drop PDFs or CSVs to rebuild the tenant FAISS index for{" "}
+                Drag and drop PDFs or CSVs to refresh tenant pgvector embeddings for{" "}
                 <span style={{ color: "#38bdf8" }}>{organization}</span>.
               </p>
             </div>

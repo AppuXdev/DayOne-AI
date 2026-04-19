@@ -1,0 +1,79 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS tenants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'employee')),
+    name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, username)
+);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    file_url TEXT NOT NULL,
+        object_key TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    filename TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'uploading' CHECK (status IN ('uploading', 'processing', 'active', 'failed', 'deleted')),
+        error_message TEXT NOT NULL DEFAULT '',
+    uploaded_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS object_key TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'uploading';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+UPDATE documents
+SET object_key = regexp_replace(replace(file_url, 'minio://', ''), '^[^/]+/', '')
+WHERE (object_key IS NULL OR object_key = '')
+    AND file_url LIKE 'minio://%';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_documents_tenant_filename_version
+ON documents (tenant_id, lower(filename), version);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_documents_tenant_object_key
+ON documents (tenant_id, object_key)
+WHERE object_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    document_id UUID NULL REFERENCES documents(id) ON DELETE SET NULL,
+    chunk_text TEXT NOT NULL,
+    embedding vector(384) NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_tenant_username_lower
+ON users (tenant_id, lower(username));
+CREATE INDEX IF NOT EXISTS idx_documents_tenant ON documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+CREATE INDEX IF NOT EXISTS idx_embeddings_tenant ON embeddings(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_metadata ON embeddings USING GIN (metadata);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_vector
+ON embeddings USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+
+UPDATE users
+SET username = lower(username)
+WHERE username <> lower(username);

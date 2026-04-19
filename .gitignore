@@ -16,8 +16,6 @@ env/
 # Streamlit state
 .streamlit/
 
-# Local FAISS artifacts
-vector_store/
 
 # OS and editor files
 .DS_Store

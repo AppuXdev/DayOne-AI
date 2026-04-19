@@ -60,8 +60,7 @@ def _apply_runtime_patches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app, "load_embeddings", MagicMock(return_value=MagicMock(name="embeddings")), raising=True)
     monkeypatch.setattr(app, "get_llm", MagicMock(return_value=MagicMock(name="llm")), raising=True)
 
-    # Keep login tests isolated from FAISS and model loading.
-    monkeypatch.setattr(app, "load_vector_store_for_org", MagicMock(return_value=None), raising=True)
+    # Keep login tests isolated from model loading.
 
 
 def _submit_login(at: AppTest, username: str, password: str) -> AppTest:

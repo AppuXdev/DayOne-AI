@@ -1,363 +1,367 @@
-﻿# DayOne AI
+# DayOne AI
 
-DayOne AI is a multi-tenant HR knowledge copilot designed like a SaaS product: secure organization boundaries, admin controls, real-time chat, and continuous content updates.
+DayOne AI is a production-style, multi-tenant retrieval system designed to answer ambiguous policy questions with grounded, auditable responses.
 
-It helps teams answer policy, benefits, and onboarding questions in seconds, grounded in each tenant's own documents.
+It is built around a simple constraint: answers must be explainable, tenant-isolated, and measurable — not just plausible.
 
-## Product Snapshot
+Unlike typical RAG demos, this system treats retrieval quality, data consistency, and operational safety as enforceable properties.
 
-- Multi-tenant architecture with tenant-isolated data and indexes.
-- Hybrid retrieval stack (FAISS + BM25 + RRF) with optional reranking.
-- Real-time streaming chat via Server-Sent Events (SSE).
-- Admin workspace for uploads, user administration, and drift reporting.
-- Feedback loop that improves retrieval quality over time.
+It combines hybrid retrieval, cross-encoder reranking, feedback-weighted ranking, and lifecycle-aware ingestion into a database-native architecture.
 
-## Evaluation-First Approach
+The system was migrated from FAISS to PostgreSQL pgvector only after explicit parity validation, ensuring no loss in retrieval quality.
 
-DayOne AI treats evaluation as a release gate, not a side task.
+## Overview
 
-Tier 1 (default, deterministic):
+DayOne AI is a multi-tenant knowledge assistant platform for organizations that need reliable policy answers under real-world ambiguity.
 
-- Retrieval hit rate
-- Correct abstentions for negative queries
-- Precision@1 / @3 / @k (keyword-in-chunk proxy)
-- End-to-end latency and TTFT (time-to-first-token)
-- Confidence tracking and error category breakdown
+It includes:
 
-Tier 2 (optional judge mode):
+- FastAPI backend for auth, retrieval orchestration, ingestion, admin APIs, and streaming
+- Next.js frontend for SaaS-style product UX and admin workflows
+- PostgreSQL plus pgvector as canonical dense retrieval backend
+- MinIO for document object storage and lifecycle consistency checks
+- In-process conversation memory (Redis is provisioned in infra; persistence migration path is prepared)
+- Streamlit interface for fast internal ops and live streaming interaction
 
-- Faithfulness: are claims grounded in retrieved context?
-- Correctness: does the answer satisfy the question intent?
-- Hallucination flag per query
-- Cache-backed judge runs for affordable repeated evaluation
+## What Makes This Different
 
-Commands:
+This system is not a "chat with your documents" demo.
 
-```powershell
-.\.venv\Scripts\python.exe eval.py --org org_acme
-.\.venv\Scripts\python.exe eval.py --org org_acme --judge
-.\.venv\Scripts\python.exe eval.py --org org_acme --judge --rerun
-```
+It is built around four enforceable properties:
 
-## Why This Feels Like SaaS
+- **Evaluation-first design**  
+  Retrieval quality is measured with explicit benchmarks, not assumed.
 
-- Tenant isolation by design:
-  - Data layout and vector indexes are separated per organization.
-- Role-based experiences:
-  - Employee chat and admin workflows are distinct.
-- Operational tooling:
-  - Auto-ingest watcher, health endpoint, evaluation harness, and test suite.
-- API-first foundation:
-  - FastAPI backend powers both Streamlit and Next.js clients.
+- **Explainable retrieval**  
+  Every answer includes justification traces and source attribution.
+
+- **Feedback as a ranking signal**  
+  User feedback directly influences retrieval ordering via bounded weighting.
+
+- **Strict multi-tenant isolation**  
+  Every query, embedding, and document operation is scoped by tenant_id.
+
+These constraints shape every design decision in the system.
+
+## Problem
+
+The core problem is answering ambiguous questions with strictly grounded, tenant-safe information.
+
+Naive RAG systems fail because they optimize for plausibility instead of correctness:
+
+- Dense-only retrieval misses exact policy terms
+- Sparse-only retrieval misses semantic intent
+- No reranking produces unstable top-k results
+- No evaluation turns quality into guesswork
+- No lifecycle control creates inconsistent data states
+
+DayOne AI treats these as system constraints, not edge cases.
 
 ## Key Features
 
-### Employee Experience
-
-- Ask natural-language HR questions and receive grounded answers.
-- View confidence signals and source-backed rationale.
-- Submit feedback on response quality.
-
-### Admin Experience
-
-- Upload tenant documents and trigger index refresh.
-- Manage tenant users (create, update, delete).
-- Review semantic drift trends for governance and quality checks.
-
-### Platform Capabilities
-
-- Retrieval pipeline: FAISS dense retrieval + BM25 sparse retrieval + RRF fusion.
-- Optional cross-encoder reranker (`DAYONE_USE_RERANKER=1` by default).
-- Streaming endpoint (`/api/chat/stream`) with TTFT event support.
-- Tenant-level limits and configurable auth/session controls.
-
-## Feedback Learning Mechanism
-
-Feedback is not a generic log. It changes ranking weights used by retrieval.
-
-Implementation summary:
-
-- Feedback is logged per organization with rating (`up` / `down`) and cited source files.
-- Per-source stats are converted into a bounded reputation score.
-- Retrieval multiplies base candidate score by source weight before final ranking.
-
-Formula used in [feedback.py](feedback.py):
-
-$$
-  \\text{net\_ratio} = \\frac{\\text{positive} - \\text{negative}}{\\max(\\text{total}, 1)}
-$$
-
-$$
-  \\text{reputation} = 0.5 + 0.5 \\cdot \\tanh(2 \\cdot \\text{net\_ratio})
-$$
-
-$$
-  \\text{weight} = 1.0 + (\\text{reputation} - 0.5)\\ \\in\\ [0.77, 1.23]
-$$
-
-Applied in [retriever.py](retriever.py):
-
-$$
-  \\text{final\_score} = \\text{base\_score} \\times \\text{source\_weight}
-$$
-
-Where `base_score` is:
-
-- Cross-encoder score when reranker is ON
-- BM25-derived score when reranker is OFF
-
-Why bounded weighting matters:
-
-- A single bad vote cannot erase a source.
-- A single good vote cannot dominate retrieval.
-- The model adapts over time while staying stable.
-
-## Drift Definition and Measurement
-
-Drift is defined as semantic change between old vs new document chunks, not as a vague trend line.
-
-Current method in [drift.py](drift.py):
-
-1. Embed old and new chunk sets.
-2. L2-normalize embeddings and compute cosine distance.
-3. For each new chunk, find nearest old chunk.
-4. Mark as `changed` if distance exceeds threshold (`DRIFT_DISTANCE_THRESHOLD`, default `0.25`).
-5. Detect `removed` and net `new` sections from unmatched counts.
-
-Report output includes:
-
-- `changed_chunks`
-- `unchanged_chunks`
-- `removed_chunks`
-- `new_chunks`
-- Per-diff snippet pairs with measured distance
-
-Operational meaning:
-
-- Drift here is embedding-level policy-content shift at chunk granularity.
-- This is document semantic versioning, not dashboard buzzwording.
-
-## Retrieval Optimization Insights
-
-Key engineering trade-offs from [retriever.py](retriever.py):
-
-- Hybrid retrieval over dense-only:
-  - Dense retrieval misses exact lexical signals (codes, policy terms, proper nouns).
-  - BM25 recovers lexical precision.
-  - RRF fuses both without fragile score normalization.
-- Reranker ON by default:
-  - Typical gain: ~10-16 percentage points precision uplift (project benchmark note).
-  - Typical cost: ~200-400 ms extra CPU latency.
-- Candidate set tuning:
-  - `CANDIDATE_K=12` balances recall and reranker compute.
-  - `FINAL_K=4` constrains context passed to the LLM.
-
-## Hard ML Problem This System Solves
-
-The core challenge is retrieval under ambiguity with strict grounding constraints.
-
-In practice, HR queries are often:
-
-- Lexically vague ("leave policy")
-- Semantically specific (carry-forward, eligibility windows)
-- Risk-sensitive (wrong answer has policy/compliance impact)
-
-The system addresses this by combining:
-
-- Dual-signal retrieval (semantic + lexical)
-- Rank fusion and cross-encoder reranking
-- Confidence and abstention behavior for low-evidence cases
-- Online source-weight adaptation from user feedback
-
-This is not model fine-tuning; it is production retrieval intelligence engineered for stability, explainability, and tenant safety.
-
-## Failure Case Example (And How We Debug It)
-
-Example query:
-
-- "Do unused leaves expire?"
-
-Observed failure pattern (pre-hardening runs):
-
-- Retrieved chunk emphasized generic leave policy language.
-- Correct carry-forward section ranked lower.
-- Answer reflected the higher-ranked but less specific chunk.
-
-Root cause:
-
-- Lexical overlap around "leave" outweighed the more specific "unused/carry-forward" intent in top candidates.
-
-Mitigations now used:
-
-- Hybrid retrieval (dense + BM25 + RRF) to reduce single-mode bias.
-- Cross-encoder reranking to promote semantically aligned chunks.
-- Source feedback weighting to down-rank repeatedly unhelpful sources.
-
-Next hardening step (planned):
-
-- Query rewriting for ambiguity resolution before retrieval.
+- Multi-tenant enforcement at every layer
+- DB-only auth and user management (`DATABASE_URL` required at runtime)
+- Hybrid retrieval: BM25 + dense retrieval + Reciprocal Rank Fusion
+- Cross-encoder reranking for precision-critical answers
+- Explainable retrieval with justification records and source transparency
+- Feedback-weighted retrieval that updates source influence over time
+- Drift detection for semantic policy change tracking
+- Evaluation harness with benchmark metrics, parity validation, and stabilization gates
+- Streaming responses over SSE and Streamlit for low-friction user interaction
+- Lifecycle-aware ingestion with document status transitions and reconciliation
 
 ## Architecture
 
-### Frontends
+### System Overview
 
-- Streamlit app ([app.py](app.py)):
-  - Employee chat + admin portal in one UI.
-- Next.js app ([app/page.tsx](app/page.tsx)):
-  - Routes for landing, login, chat, and admin dashboards.
+```mermaid
+flowchart TD
+  A[Frontend<br/>Next.js / Streamlit] --> B[FastAPI<br/>auth, retrieval orchestration, ingestion]
+  B --> C[PostgreSQL<br/>users, documents, pgvector embeddings]
+  B --> D[MinIO<br/>object storage]
+  B --> E[Redis<br/>memory / cache]
+```
 
-### Backend
+### High-level components
 
-- FastAPI API server ([main.py](main.py)).
-- Auth: JWT-based API auth plus Streamlit authenticator support.
-- Core services:
-  - Retrieval ([retriever.py](retriever.py))
-  - Ingestion ([ingest.py](ingest.py))
-  - Auto-ingest watcher ([auto_ingest.py](auto_ingest.py))
-  - Feedback weighting ([feedback.py](feedback.py))
-  - Drift analysis ([drift.py](drift.py))
+- API Layer (FastAPI)
+  - Auth, chat APIs, admin APIs, upload and ingestion endpoints, feedback, streaming
+  - Login requires `username`, `password`, and `organization`; JWT carries `tenant_id`
+- Retrieval Layer
+  - Candidate generation (sparse + dense), fusion, reranking, confidence estimation
+  - Dense retrieval is pgvector-only and tenant-scoped by `tenant_id`
+- Data Layer
+  - PostgreSQL tables for tenants, users, documents, embeddings, metadata
+  - pgvector indexes for ANN dense retrieval
+  - MinIO for source objects
+  - In-memory conversation store in current runtime
+- Product Layer
+  - Next.js app for employees and admins
+  - Streamlit interface for rapid internal operations
 
-## API Overview
+### Query data flow
 
-Auth:
+1. User query arrives with tenant identity from JWT context
+2. Query is rewritten for retrieval robustness
+3. Sparse and dense candidates are fetched under strict tenant filter
+4. Reciprocal Rank Fusion combines sparse and dense rankings
+5. Cross-encoder reranking refines top candidates
+6. Context is assembled with source metadata and confidence
+7. LLM generates grounded answer from retrieved context only
+8. Response streams to client (SSE or Streamlit), with traceable sources
 
-- `POST /auth/login`
+### Ingestion data flow
 
-Chat and feedback:
+1. Admin uploads document
+2. Object stored in MinIO under tenant-scoped key
+3. Document row created with status lifecycle (uploading to processing to active or failed)
+4. Chunking and embedding generation run per tenant snapshot
+5. Embeddings are replaced transactionally in PostgreSQL
+6. Reconciliation checks detect missing objects or orphaned metadata
 
-- `POST /api/chat`
-- `POST /api/chat/stream`
-- `POST /api/feedback`
+Operational endpoint:
 
-Admin endpoints:
+- `POST /api/admin/storage/reconcile` verifies and repairs object/DB consistency for the tenant scope
 
-- `POST /api/admin/upload`
-- `GET /api/admin/drift-report`
-- `GET /api/admin/users`
-- `POST /api/admin/users`
-- `PATCH /api/admin/users/{username}`
-- `DELETE /api/admin/users/{username}`
+## Retrieval Pipeline
 
-Operations:
+### Why hybrid retrieval
 
-- `GET /health`
+DayOne AI uses hybrid retrieval because enterprise policy search has both lexical and semantic requirements.
 
-## Multi-Tenant Data Model
+- BM25 captures exact policy terms, procedural phrases, and compliance tokens
+- Dense retrieval captures paraphrase and semantic intent
+- RRF unifies both without forcing incompatible score normalization assumptions
 
-- Source content: [data/org_acme](data/org_acme), [data/org_globex](data/org_globex), and other `data/org_<tenant>` folders.
-- Per-tenant vector index: `vector_store/org_<tenant>/index.faiss`.
-- Cache manifests and partitioned parts under `vector_cache/org_<tenant>/`.
-- Watcher monitors tenant folders for `.pdf` and `.csv` changes.
+### Why reranking
 
-## Tech Stack
+Candidate retrieval maximizes recall, while reranking maximizes final precision.
 
-- Backend: Python, FastAPI, LangChain, FAISS, sentence-transformers.
-- LLM provider: Groq (`llama-3.1-8b-instant` by default via env).
-- Frontend: Next.js 14, React 18, TypeScript.
-- Streamlit auth: `streamlit-authenticator`.
+- Cross-encoder reranking improves top-answer quality when multiple near-relevant passages exist
+- It adds latency, so it is treated as an explicit quality-latency tradeoff, not a hidden default
 
-## Local Setup
+### Explainability and control
+
+Retrieval outputs include candidate reasoning signals:
+
+- Fusion and rerank effects
+- Source attribution and confidence
+- Justification traces for debugging and review
+
+This is critical for production trust and incident response.
+
+## Evaluation
+
+Evaluation is a system feature, not a notebook afterthought.
+All architectural changes (including FAISS -> pgvector migration) are gated by measured parity against this evaluation harness.
+
+### Benchmark design
+
+The benchmark set includes mixed query categories:
+
+- Direct policy questions
+- Paraphrases
+- Multi-hop policy intent
+- Negative queries requiring abstention
+- Ambiguous prompts requiring grounded disambiguation
+
+### Tracked metrics
+
+- Positive retrieval hit rate
+- Precision at 1, 3, and k
+- Average latency and time-to-first-token
+- Confidence behavior
+- Error category distribution
+
+### FAISS to pgvector parity validation
+
+The dense backend migrated from FAISS to pgvector only after explicit parity checks.
+
+| Setup | Hit Rate | P@1 | P@3 | P@k | Avg Latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FAISS baseline | 62.5% | 100.0% | 77.1% | 76.6% | 4550 ms |
+| pgvector | 62.5% | 100.0% | 77.1% | 76.6% | 4665 ms |
+
+Interpretation:
+
+- Retrieval quality parity achieved
+- Small latency increase is expected for database-backed ANN and accepted within gate thresholds
+
+### Stabilization gate
+
+A one-command gate validates post-migration safety using thresholded checks for:
+
+- Hit rate delta
+- P@1 delta
+- Confidence delta
+- Latency ratio
+
+This prevents regressions from being merged on intuition.
+The stabilization gate enforces release-level guarantees and prevents unverified retrieval changes from entering the system.
+
+Gate implementation detail:
+
+- The current gate compares `eval_pgvector.json` against immutable baseline in `scripts/legacy_benchmark/faiss_baseline_org_acme.json`
+
+## System Design Decisions
+
+### PostgreSQL plus pgvector over standalone FAISS
+
+Why:
+
+- Operationally simpler for multi-tenant SaaS data governance
+- Better alignment with transaction boundaries and metadata consistency
+- Easier backup, migration, and audit workflows than separate index artifact management
+
+Tradeoff:
+
+- Slight latency overhead versus in-process FAISS for equivalent quality
+
+### Tenant isolation as a hard invariant
+
+Isolation is enforced in:
+
+- Auth token context
+- Retrieval queries
+- Embedding selection
+- Document storage keys
+- Admin operations
+
+Goal: no cross-tenant context access even under ambiguous requests or operational failure.
+
+### Feedback-weighted ranking
+
+User feedback is not logged and ignored. It modifies source influence to improve retrieval ordering over time while preserving bounded stability.
+
+### Lifecycle-aware ingestion
+
+Documents are managed through explicit states to avoid silent inconsistency:
+
+- uploading
+- processing
+- active
+- failed
+- deleted
+
+MinIO and PostgreSQL reconciliation prevents drift between object and metadata layers.
+
+## Failure Modes
+
+Known limitations and active risk areas:
+
+- Answer correctness is still partially estimated by LLM-as-judge; this is weaker than fully human-labeled gold datasets
+- Reranker improves precision but can increase tail latency under heavy load
+- Drift tracking currently emphasizes document semantic change more than live query-distribution drift
+- Ambiguous policy questions can still underperform when source material is sparse or contradictory
+- Operational reliability depends on healthy Postgres and MinIO boundaries; chat memory is currently process-local
+
+These are explicit engineering constraints, not hidden caveats.
+
+Example failure case:
+
+Query: "Do unused leaves expire?"
+
+Failure mode:
+
+- Retrieval surfaced a carry-forward policy instead of expiration rules
+- Caused by keyword overlap and insufficient query specificity
+
+Mitigation:
+
+- Query rewriting and hybrid retrieval improve recall
+- Reranking prioritizes semantically aligned chunks
+
+## Setup
 
 ### Prerequisites
 
-- Python 3.10+
-- Node.js 18+
-- A valid `GROQ_API_KEY`
+- Python 3.11+
+- Node.js 20+
+- Docker and Docker Compose
+- Groq API key
 
-Create `.env` in project root:
+### Environment
 
-```env
-GROQ_API_KEY=your_key_here
-# Optional overrides
-# DAYONE_GROQ_MODEL=llama-3.1-8b-instant
-# DAYONE_USE_RERANKER=1
-# JWT_SECRET_KEY=replace_in_production
-# CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+Create a .env file with required runtime configuration:
+
+```bash
+GROQ_API_KEY=your_key
+DATABASE_URL=postgresql+psycopg://dayone:dayone@localhost:5432/dayone
+REDIS_URL=redis://localhost:6379/0
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=admin
+MINIO_SECRET_KEY=password
+MINIO_BUCKET=dayone-docs
+DAYONE_USE_RERANKER=1
+DAYONE_PGVECTOR_PROBES=10
+DAYONE_EMBEDDING_DIM=384
 ```
 
-### One-Command Bootstrap (Recommended)
+Auth and users note:
+
+- `DATABASE_URL` is mandatory for `/auth/login` and `/api/admin/users*`
+- Legacy YAML users can be imported once with:
 
 ```powershell
-.\run.ps1
+.\.venv\Scripts\python.exe migrate_users.py
 ```
 
-What this does:
+### Run infrastructure
 
-- Creates `.venv` if needed.
-- Installs Python and Node dependencies.
-- Runs ingestion.
-- Starts auto-ingest watcher, FastAPI, and Next.js.
-- Starts Streamlit unless `-NoStreamlit` is provided.
+```bash
+docker compose -f infra/docker-compose.yml up --build
+```
 
-Useful flags:
+### Run evaluation
 
 ```powershell
-.\run.ps1 -SkipInstall
-.\run.ps1 -SkipIngest
-.\run.ps1 -NoStreamlit
-.\run.ps1 -UseSeparateTerminals
+.\.venv\Scripts\python.exe eval.py --org org_acme --output eval_pgvector.json
 ```
 
-### Manual Startup
+### Run stabilization gate
 
 ```powershell
-.\.venv\Scripts\python.exe ingest.py
-.\.venv\Scripts\python.exe auto_ingest.py
-.\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-npm install
-$env:NEXT_PUBLIC_API_BASE_URL='http://127.0.0.1:8000'
-npm run dev
-.\.venv\Scripts\python.exe -m streamlit run app.py
+powershell -ExecutionPolicy Bypass -File scripts/stabilization_gate.ps1 -Org org_acme
 ```
 
-## Demo Credentials (Local Only)
+## Demo
 
-- Employee: `john_doe` / `password123`
-- Admin: `admin_acme` / `password123`
+### Employee flow
 
-Rotate all secrets and credentials before staging or production use.
+- Authenticate to tenant-scoped account
+- Ask ambiguous policy question
+- Receive streamed answer with grounded source context
+- Submit feedback to influence future ranking
 
-## Quality and Evaluation
+### Admin flow
 
-Run tests:
+- Upload CSV or PDF policy files
+- Trigger ingestion and monitor lifecycle status
+- Validate drift report after document updates
+- Run storage reconciliation endpoint to detect mismatches
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
+### Suggested live demo script
 
-Latest recorded status (April 2026): `8 passed`.
+1. Log in as tenant admin and upload revised policy document
+2. Show ingestion status transition to active
+3. Ask the same question before and after update
+4. Show changed retrieval evidence and answer grounding
+5. Run evaluation and stabilization gate to demonstrate measurable reliability
 
-Run retrieval evaluation:
+## Repository Structure
 
-```powershell
-.\.venv\Scripts\python.exe eval.py --org org_acme
-.\.venv\Scripts\python.exe eval.py --org org_acme --output eval_results.json
-.\.venv\Scripts\python.exe eval.py --org org_acme --judge
-```
+- app and frontend: product UX layers
+- main.py: FastAPI API and orchestration
+- retriever.py: hybrid retrieval, fusion, reranking, confidence
+- ingest.py and auto_ingest.py: ingestion lifecycle and refresh
+- eval.py: benchmark and metric pipeline
+- backend/services: auth, user, document, embedding, and storage adapters
+- scripts: DB init, stabilization gate, and ops utilities
 
-## Configuration Reference
+## Why This Project Matters
 
-- `GROQ_API_KEY` (required)
-- `DAYONE_GROQ_MODEL` (optional)
-- `DAYONE_USE_RERANKER` (`1` or `0`)
-- `TENANT_RATE_LIMIT_RPM`
-- `TENANT_UPLOAD_LIMIT_PER_DAY`
-- `TENANT_MAX_CHUNKS`
-- `ACCESS_TOKEN_EXPIRE_MINUTES`
-- `JWT_SECRET_KEY`
-- `CORS_ORIGINS`
+DayOne AI demonstrates production ML systems engineering where retrieval quality, tenant safety, and operational correctness are treated as enforceable properties.
 
-## Troubleshooting
+This is the difference between a RAG demo and a deployable multi-tenant AI system.
 
-- Missing Groq API key:
-  - Add `GROQ_API_KEY` to `.env` and restart services.
-- Empty tenant knowledge base:
-  - Run ingestion and confirm docs exist under `data/org_*`.
-- Next.js cannot reach API:
-  - Confirm `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`.
-- Watcher not triggering:
-  - Ensure [auto_ingest.py](auto_ingest.py) is running and files changed under tenant folders.
-
-## Production Readiness Note
-
-This repository is structured for local development, product prototyping, and internal demos. For production, enforce stronger secrets management, tenant hardening, observability, and deployment controls.
+This project demonstrates how retrieval systems can be engineered with measurable guarantees, not just model-driven behavior.

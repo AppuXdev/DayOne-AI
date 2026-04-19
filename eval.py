@@ -51,7 +51,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ROOT_DIR = Path(__file__).resolve().parent
-VECTOR_STORE_DIR = ROOT_DIR / "vector_store"
 DATA_DIR = ROOT_DIR / "data"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MODEL_NAME = os.getenv("DAYONE_GROQ_MODEL", "llama-3.1-8b-instant")
@@ -236,23 +235,22 @@ def _classify_error(
 
 
 def _build_retriever(org_id: str, use_reranker: bool):
-    from langchain_community.vectorstores import FAISS
     from langchain_huggingface import HuggingFaceEmbeddings
-    from retriever import HybridRetriever
+    from retriever import HybridRetriever, build_pgvector_hybrid_retriever
 
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         encode_kwargs={"normalize_embeddings": True},
     )
-    store_path = VECTOR_STORE_DIR / org_id
-    if not store_path.exists():
-        raise FileNotFoundError(
-            f"No vector store found for org '{org_id}'. Run python ingest.py first."
-        )
-    store = FAISS.load_local(
-        str(store_path), embeddings, allow_dangerous_deserialization=True
+    return (
+        build_pgvector_hybrid_retriever(
+            organization=org_id,
+            tenant_id=None,
+            embeddings=embeddings,
+            use_reranker=use_reranker,
+        ),
+        embeddings,
     )
-    return HybridRetriever(store, embeddings, use_reranker=use_reranker), embeddings
 
 
 def _build_llm():
@@ -623,7 +621,10 @@ def main() -> None:
 
     for use_reranker, mode_label in [(True, "reranker_on"), (False, "reranker_off")]:
         print(f"\n[eval] Running mode: {mode_label} ...")
-        retriever, _ = _build_retriever(args.org, use_reranker=use_reranker)
+        retriever, _ = _build_retriever(
+            args.org,
+            use_reranker=use_reranker,
+        )
         mode_results: List[QueryResult] = []
 
         for bq in BENCHMARK:

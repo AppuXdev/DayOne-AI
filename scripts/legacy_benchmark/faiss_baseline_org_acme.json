@@ -1,0 +1,13 @@
+{
+  "org": "org_acme",
+  "mode": "reranker_on",
+  "positive_hit_rate": 0.625,
+  "precision_at_1": 1.0,
+  "precision_at_3": 0.771,
+  "precision_at_k": 0.766,
+  "avg_latency_ms": 4550.4,
+  "avg_ttft_ms": 2920.3,
+  "avg_confidence": 0.104,
+  "n_queries": 20,
+  "recorded_at": "2026-04-19"
+}
