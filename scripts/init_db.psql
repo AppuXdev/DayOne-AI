@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS documents (
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS query_traces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    trace JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS object_key TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'uploading';
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT '';

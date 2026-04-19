@@ -498,6 +498,22 @@ def _summarise(results: List[QueryResult], mode: str) -> dict:
     avg_p3 = sum(r.precision_at_3 for r in positives) / len(positives) if positives else 0.0
     avg_pk = sum(r.precision_at_k for r in positives) / len(positives) if positives else 0.0
 
+    # Abstention metrics treat abstain as the positive class.
+    # should_abstain = negative benchmark query.
+    # did_abstain = fallback phrase emitted by the system.
+    tp = sum(1 for r in results if (not r.expect_answer) and _is_fallback(r.answer))
+    fp = sum(1 for r in results if r.expect_answer and _is_fallback(r.answer))
+    fn = sum(1 for r in results if (not r.expect_answer) and (not _is_fallback(r.answer)))
+    abstention_precision = tp / (tp + fp) if (tp + fp) else 0.0
+    abstention_recall = tp / (tp + fn) if (tp + fn) else 0.0
+    abstention_f1 = (
+        (2 * abstention_precision * abstention_recall) / (abstention_precision + abstention_recall)
+        if (abstention_precision + abstention_recall) > 0
+        else 0.0
+    )
+    false_abstentions = fp
+    false_abstention_rate = (false_abstentions / len(positives)) if positives else 0.0
+
     error_counts = {cat: 0 for cat in ERROR_CATEGORIES}
     for r in results:
         cat = r.error_category if r.error_category in error_counts else "ok"
@@ -521,6 +537,11 @@ def _summarise(results: List[QueryResult], mode: str) -> dict:
         "precision_at_1": round(avg_p1, 3),
         "precision_at_3": round(avg_p3, 3),
         "precision_at_k": round(avg_pk, 3),
+        "abstention_precision": round(abstention_precision, 3),
+        "abstention_recall": round(abstention_recall, 3),
+        "abstention_f1": round(abstention_f1, 3),
+        "false_abstentions": false_abstentions,
+        "false_abstention_rate": round(false_abstention_rate, 3),
         "error_categories": error_counts,
         # Tier 2
         "avg_faithfulness": round(avg_faith, 3) if avg_faith is not None else None,
@@ -540,6 +561,11 @@ def _print_table(summary_on: dict, summary_off: dict) -> None:
     tier1_metrics = [
         ("Retrieval hit rate",     "positive_hit_rate",     "{:.1%}"),
         ("Correct abstentions",    "negative_abstain_rate",  "{:.1%}"),
+        ("Abstention precision",   "abstention_precision",   "{:.1%}"),
+        ("Abstention recall",      "abstention_recall",      "{:.1%}"),
+        ("Abstention F1",          "abstention_f1",          "{:.1%}"),
+        ("False abstention rate",  "false_abstention_rate",  "{:.1%}"),
+        ("False abstentions",      "false_abstentions",      "{}"),
         ("Precision@1 (proxy)",    "precision_at_1",         "{:.1%}"),
         ("Precision@3 (proxy)",    "precision_at_3",         "{:.1%}"),
         ("Precision@k (proxy)",    "precision_at_k",         "{:.1%}"),

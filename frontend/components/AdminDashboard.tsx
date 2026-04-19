@@ -401,6 +401,27 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
           color: #e2e8f0;
         }
 
+        .debug-btn {
+          width: 100%;
+          border-radius: 14px;
+          border: 1px solid rgba(56, 189, 248, 0.45);
+          background: rgba(56, 189, 248, 0.12);
+          padding: 0.75rem 1rem;
+          font-size: 0.875rem;
+          font-weight: 600;
+          font-family: 'Inter', sans-serif;
+          color: #7dd3fc;
+          cursor: pointer;
+          transition: border-color 0.2s, background 0.2s, color 0.2s;
+          margin-top: 0.75rem;
+        }
+
+        .debug-btn:hover {
+          border-color: rgba(56, 189, 248, 0.8);
+          background: rgba(56, 189, 248, 0.2);
+          color: #bae6fd;
+        }
+
         .admin-content {
           flex: 1;
           padding: 2.5rem 2rem;
@@ -744,6 +765,14 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
           </div>
 
           {/* Sign out */}
+          <button
+            onClick={() => router.push("/admin/debug")}
+            className="debug-btn"
+            aria-label="Open retrieval trace debug panel"
+          >
+            Open Debug Panel
+          </button>
+
           <button
             onClick={signOut}
             className="signout-btn"

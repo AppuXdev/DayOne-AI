@@ -13,6 +13,7 @@ import tempfile
 import time
 import threading
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -43,9 +44,14 @@ from retriever import (
 from feedback import get_feedback_store
 from drift import load_drift_report, DriftReport
 from backend.services import auth_db
+from backend.services.abstention import VerificationSummary, should_abstain
 from backend.services import document_db
+from backend.services.query_classifier import HeuristicQueryClassifier
+from backend.services.query_router import route_query
+from backend.services import query_trace_db
 from backend.services import storage_minio
 from backend.services import user_db
+from backend.services.verifier import NullVerifier, VerificationResult
 
 load_dotenv()
 
@@ -65,6 +71,10 @@ CORS_ORIGINS = [
 TENANT_RATE_LIMIT_RPM: int = int(os.getenv("TENANT_RATE_LIMIT_RPM", "30"))
 TENANT_UPLOAD_LIMIT_PER_DAY: int = int(os.getenv("TENANT_UPLOAD_LIMIT_PER_DAY", "20"))
 STORAGE_RECONCILE_INTERVAL_SECONDS: int = int(os.getenv("STORAGE_RECONCILE_INTERVAL_SECONDS", "300"))
+ENABLE_VERIFIER: bool = os.getenv("DAYONE_ENABLE_VERIFIER", "1") != "0"
+ENABLE_ABSTENTION: bool = os.getenv("DAYONE_ENABLE_ABSTENTION", "1") != "0"
+ENABLE_QUERY_ROUTING: bool = os.getenv("DAYONE_ENABLE_QUERY_ROUTING", "1") != "0"
+ABSTAIN_RETRIEVAL_THRESHOLD: float = float(os.getenv("DAYONE_ABSTAIN_RETRIEVAL_THRESHOLD", "0.40"))
 ROLE_ADMIN = "admin"
 ROLE_EMPLOYEE = "employee"
 
@@ -221,6 +231,11 @@ class ChatResponse(BaseModel):
     latency_ms: float = 0.0
     ttft_ms: float = 0.0
     justification: List[Dict[str, Any]] = Field(default_factory=list)
+    verification: Dict[str, Any] = Field(default_factory=dict)
+    abstained: bool = False
+    abstain_reason: Optional[str] = None
+    route: str = "fast_path"
+    query_type: str = "factual"
     status: str = "ok"
     query_id: str = ""   # used by frontend to submit feedback
 
@@ -237,6 +252,35 @@ class ReconcileResponse(BaseModel):
     organization: str
     missing_for_db: int
     orphan_deleted: int
+
+
+class QueryTraceRecord(BaseModel):
+    id: str
+    tenant_id: str
+    query: str
+    trace: Dict[str, Any]
+    created_at: datetime
+
+
+class EvalAbstentionModeMetrics(BaseModel):
+    abstention_precision: float = 0.0
+    abstention_recall: float = 0.0
+    abstention_f1: float = 0.0
+    false_abstentions: int = 0
+    false_abstention_rate: float = 0.0
+
+
+class EvalAbstentionMetricsResponse(BaseModel):
+    source_file: str
+    generated_at: datetime
+    release_tag: Optional[str] = None
+    model_version: Optional[str] = None
+    git_commit: Optional[str] = None
+    modes: Dict[str, EvalAbstentionModeMetrics]
+
+
+class EvalAbstentionMetricsHistoryResponse(BaseModel):
+    items: List[EvalAbstentionMetricsResponse]
 
 
 class FeedbackRequest(BaseModel):
@@ -443,6 +487,16 @@ def get_or_create_memory(username: str, organization: str) -> ConversationHistor
     return memory
 
 
+@lru_cache(maxsize=1)
+def get_query_classifier() -> HeuristicQueryClassifier:
+    return HeuristicQueryClassifier()
+
+
+@lru_cache(maxsize=1)
+def get_answer_verifier() -> NullVerifier:
+    return NullVerifier()
+
+
 def build_hybrid_retriever(
     embeddings: HuggingFaceEmbeddings,
     organization: str,
@@ -490,6 +544,11 @@ def write_audit_log(
     username: str, org_id: str, query: str, rewritten_query: str,
     answer: str, confidence: float, sources: List[str],
     latency_ms: float, conflict_detected: bool,
+    route: str = "fast_path",
+    query_type: str = "factual",
+    verification_confidence: float = 0.0,
+    abstained: bool = False,
+    abstain_reason: Optional[str] = None,
 ) -> None:
     LOGS_DIR.mkdir(exist_ok=True)
     record = {
@@ -504,6 +563,11 @@ def write_audit_log(
         "sources": sources,
         "latency_ms": round(latency_ms, 1),
         "conflict_detected": conflict_detected,
+        "route": route,
+        "query_type": query_type,
+        "verification_confidence": round(verification_confidence, 4),
+        "abstained": abstained,
+        "abstain_reason": abstain_reason,
     }
     log_path = LOGS_DIR / "query_log.jsonl"
     with log_path.open("a", encoding="utf-8") as fh:
@@ -521,6 +585,310 @@ def serialize_source_document(document: Any) -> SourceMetadata:
         tenant=str(metadata.get("tenant", "")) or None,
         metadata={"source_path": str(source_path), **extra_metadata},
     )
+
+
+@dataclass
+class ProcessedQueryResult:
+    response: ChatResponse
+    buffered_tokens: List[str]
+
+
+def _tokenize_for_stream(answer: str, answer_parts: List[str], chunk_size: int = 120) -> List[str]:
+    parts = [p for p in answer_parts if p]
+    if parts:
+        return parts
+    if not answer:
+        return []
+    return [answer[i:i + chunk_size] for i in range(0, len(answer), chunk_size)]
+
+
+def _store_trace_safely(
+    *,
+    resolved_tenant_id: str,
+    query: str,
+    query_type: str,
+    route_name: str,
+    result: RetrievalResult,
+    sources: List[SourceMetadata],
+    verification_result: VerificationResult,
+    confidence: float,
+    abstained: bool,
+    abstain_reason: Optional[str],
+    total_ms: float,
+) -> None:
+    trace_id = str(uuid4())
+    trace_payload = build_query_trace_payload(
+        query=query,
+        tenant_id=resolved_tenant_id,
+        query_type=query_type,
+        route=route_name,
+        result=result,
+        final_sources=sources,
+        verification_result=verification_result,
+        confidence=confidence,
+        abstained=abstained,
+        abstain_reason=abstain_reason,
+        latency_ms=total_ms,
+    )
+    trace_payload["trace_id"] = trace_id
+    try:
+        query_trace_db.store_query_trace(
+            tenant_id=resolved_tenant_id,
+            query=query,
+            trace=trace_payload,
+            trace_id=trace_id,
+        )
+    except Exception:
+        # Tracing must not break user responses.
+        pass
+
+
+def process_chat_query(payload: ChatRequest, claims: TokenPayload) -> ProcessedQueryResult:
+    organization = str(claims.organization).strip()
+    username = str(claims.username).strip()
+    role = str(claims.role).strip().lower()
+    tenant_id = (claims.tenant_id or "").strip() or None
+
+    if not organization or not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing user context")
+
+    query = payload.prompt.strip()
+    if not query:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt cannot be empty")
+
+    _rate_limiter.check(organization)
+
+    classification = get_query_classifier().classify(query) if ENABLE_QUERY_ROUTING else None
+    route_config = route_query(classification.type) if classification is not None else route_query("factual")
+    query_type = classification.type if classification is not None else "factual"
+    route_name = route_config.name
+
+    try:
+        resolved_tenant_id = query_trace_db.resolve_tenant_id(tenant_id=tenant_id, organization=organization)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    embeddings = load_embeddings()
+    llm = ChatGroq(model=MODEL_NAME, temperature=0, api_key=SecretStr(os.getenv("GROQ_API_KEY", "")))
+    memory = get_or_create_memory(username, organization)
+
+    rewritten = rewrite_query(query, memory, llm)
+
+    t0 = time.perf_counter()
+    source_weights = get_feedback_store().get_source_weights(organization)
+    retriever = build_hybrid_retriever(
+        embeddings,
+        organization,
+        tenant_id,
+        source_weights=source_weights,
+    )
+    result: RetrievalResult = retriever.retrieve(rewritten, candidate_k=route_config.candidate_k)
+    docs = result.final_docs
+    confidence = result.confidence
+
+    if not docs:
+        total_ms = (time.perf_counter() - t0) * 1000
+        no_results_answer = "I do not have that information in the current HR files. Please contact HR."
+        verification_result = VerificationResult(
+            is_grounded=False,
+            verification_confidence=0.0,
+            unsupported_claims=["No retrieved context available."],
+            conflict_detected=False,
+        )
+        write_audit_log(
+            username=username,
+            org_id=organization,
+            query=query,
+            rewritten_query=rewritten,
+            answer=no_results_answer,
+            confidence=0.0,
+            sources=[],
+            latency_ms=total_ms,
+            conflict_detected=False,
+            route=route_name,
+            query_type=query_type,
+            verification_confidence=0.0,
+            abstained=True,
+            abstain_reason="no_retrieval_results",
+        )
+        _store_trace_safely(
+            resolved_tenant_id=resolved_tenant_id,
+            query=query,
+            query_type=query_type,
+            route_name=route_name,
+            result=result,
+            sources=[],
+            verification_result=verification_result,
+            confidence=0.0,
+            abstained=True,
+            abstain_reason="no_retrieval_results",
+            total_ms=total_ms,
+        )
+        response = ChatResponse(
+            answer=no_results_answer,
+            sources=[],
+            username=username,
+            organization=organization,
+            role=role,
+            model=MODEL_NAME,
+            confidence=0.0,
+            confidence_label="low",
+            verification={
+                "is_grounded": False,
+                "verification_confidence": 0.0,
+                "unsupported_claims": ["No retrieved context available."],
+                "conflict_detected": False,
+            },
+            abstained=True,
+            abstain_reason="no_retrieval_results",
+            route=route_name,
+            query_type=query_type,
+            status="no_results",
+            latency_ms=round(total_ms, 1),
+            query_id=f"{organization}:{username}:{int(t0 * 1000)}",
+        )
+        return ProcessedQueryResult(response=response, buffered_tokens=[no_results_answer])
+
+    conflict = detect_conflict(docs)
+    context = "\n\n---\n\n".join(
+        f"[Source: {Path(d.metadata.get('source', 'unknown')).name}]\n{d.page_content}"
+        for d in docs
+    )
+    messages_list = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=f"Question: {rewritten}\n\nContext:\n{context}"),
+    ]
+
+    t_llm = time.perf_counter()
+    ttft_ms = 0.0
+    answer_parts: List[str] = []
+    try:
+        first = True
+        for chunk in llm.stream(messages_list):
+            chunk_content = chunk.content or ""
+            if first and chunk_content:
+                ttft_ms = (time.perf_counter() - t_llm) * 1000
+                first = False
+            answer_parts.append(chunk_content)
+        answer = "".join(answer_parts).strip() or "I do not have that information in the current HR files. Please contact HR."
+    except Exception:
+        try:
+            llm_result = llm.invoke(messages_list)
+            ttft_ms = (time.perf_counter() - t_llm) * 1000
+            answer = llm_result.content.strip() or "I do not have that information in the current HR files. Please contact HR."
+            answer_parts = [answer]
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate response") from exc
+
+    retrieved_chunks = [d.page_content for d in docs]
+    verification_result: VerificationResult
+    if ENABLE_VERIFIER:
+        verification_result = get_answer_verifier().verify(rewritten, answer, retrieved_chunks)
+    else:
+        verification_result = VerificationResult(
+            is_grounded=True,
+            verification_confidence=1.0,
+            unsupported_claims=[],
+            conflict_detected=conflict,
+        )
+
+    abstention = should_abstain(
+        retrieval_confidence=confidence,
+        verification=VerificationSummary(
+            is_grounded=verification_result.is_grounded,
+            conflict_detected=verification_result.conflict_detected,
+        ),
+        retrieval_threshold=ABSTAIN_RETRIEVAL_THRESHOLD,
+    ) if ENABLE_ABSTENTION else None
+
+    abstained = bool(abstention.abstained) if abstention is not None else False
+    abstain_reason = abstention.reason if abstention is not None else None
+
+    source_documents: List[SourceMetadata] = []
+    if not abstained:
+        source_documents = [serialize_source_document(doc) for doc in docs]
+    else:
+        answer = "I do not have enough reliable information to answer this."
+        answer_parts = [answer]
+
+    memory.chat_memory.add_user_message(query)
+    memory.chat_memory.add_ai_message(answer)
+
+    sources = source_documents
+    source_names = [s.source for s in source_documents]
+    total_ms = (time.perf_counter() - t0) * 1000
+
+    rank_changes = result.rank_changes
+    justification = [] if abstained else [
+        {
+            "rank": i + 1,
+            "source": Path(str(docs[i].metadata.get("source", "unknown"))).name,
+            "snippet": docs[i].page_content[:400].strip(),
+            "score": round(result.final_scores[i], 4) if i < len(result.final_scores) else 0.0,
+            "rank_change": rank_changes[i] if i < len(rank_changes) else 0,
+        }
+        for i in range(len(docs))
+    ]
+
+    write_audit_log(
+        username=username,
+        org_id=organization,
+        query=query,
+        rewritten_query=rewritten,
+        answer=answer,
+        confidence=confidence,
+        sources=source_names,
+        latency_ms=total_ms,
+        conflict_detected=conflict,
+        route=route_name,
+        query_type=query_type,
+        verification_confidence=verification_result.verification_confidence,
+        abstained=abstained,
+        abstain_reason=abstain_reason,
+    )
+
+    _store_trace_safely(
+        resolved_tenant_id=resolved_tenant_id,
+        query=query,
+        query_type=query_type,
+        route_name=route_name,
+        result=result,
+        sources=sources,
+        verification_result=verification_result,
+        confidence=confidence,
+        abstained=abstained,
+        abstain_reason=abstain_reason,
+        total_ms=total_ms,
+    )
+
+    query_id = f"{organization}:{username}:{int(t0 * 1000)}"
+
+    response = ChatResponse(
+        answer=answer,
+        sources=sources,
+        username=username,
+        organization=organization,
+        role=role,
+        model=MODEL_NAME,
+        confidence=round(confidence, 4),
+        confidence_label=confidence_label(confidence),
+        conflict_detected=conflict,
+        latency_ms=round(total_ms, 1),
+        ttft_ms=round(ttft_ms, 1),
+        justification=justification,
+        verification={
+            "is_grounded": verification_result.is_grounded,
+            "verification_confidence": round(verification_result.verification_confidence, 4),
+            "unsupported_claims": verification_result.unsupported_claims,
+            "conflict_detected": verification_result.conflict_detected,
+        },
+        abstained=abstained,
+        abstain_reason=abstain_reason,
+        route=route_name,
+        query_type=query_type,
+        query_id=query_id,
+    )
+    return ProcessedQueryResult(response=response, buffered_tokens=_tokenize_for_stream(answer, answer_parts))
 
 
 @app.post("/auth/login", response_model=LoginResponse)
@@ -639,12 +1007,17 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     if not payload.prompt.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt cannot be empty")
 
+    query = payload.prompt.strip()
+    classification = get_query_classifier().classify(query) if ENABLE_QUERY_ROUTING else None
+    route_config = route_query(classification.type) if classification is not None else route_query("factual")
+    resolved_tenant_id = query_trace_db.resolve_tenant_id(tenant_id=tenant_id, organization=organization)
+
     embeddings = load_embeddings()
     llm = ChatGroq(model=MODEL_NAME, temperature=0, api_key=SecretStr(os.getenv("GROQ_API_KEY", "")))
     memory = get_or_create_memory(username, organization)
 
     # Query rewriting — contextualise follow-up questions
-    rewritten = rewrite_query(payload.prompt.strip(), memory, llm)
+    rewritten = rewrite_query(query, memory, llm)
 
     # Hybrid retrieval — apply feedback-weighted source reputation
     t0 = time.perf_counter()
@@ -655,17 +1028,28 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         tenant_id,
         source_weights=source_weights,
     )
-    result: RetrievalResult = retriever.retrieve(rewritten)
+    result: RetrievalResult = retriever.retrieve(rewritten, candidate_k=route_config.candidate_k)
     docs = result.final_docs
     confidence = result.confidence
     total_ms = (time.perf_counter() - t0) * 1000
 
+    query_type = classification.type if classification is not None else "factual"
+    route_name = route_config.name
+
     if not docs:
+        verification = {
+            "is_grounded": False,
+            "verification_confidence": 0.0,
+            "unsupported_claims": ["No retrieved context available."],
+            "conflict_detected": False,
+        }
         return ChatResponse(
             answer="I do not have that information in the current HR files. Please contact HR.",
             sources=[], username=username, organization=organization,
             role=role, model=MODEL_NAME, confidence=0.0,
-            confidence_label="low", status="no_results",
+            confidence_label="low", verification=verification,
+            abstained=True, abstain_reason="no_retrieval_results",
+            route=route_name, query_type=query_type, status="no_results",
         )
 
     conflict = detect_conflict(docs)
@@ -697,16 +1081,46 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate response") from exc
 
+    retrieved_chunks = [d.page_content for d in docs]
+    verification_result: VerificationResult
+    if ENABLE_VERIFIER:
+        verification_result = get_answer_verifier().verify(rewritten, answer, retrieved_chunks)
+    else:
+        verification_result = VerificationResult(
+            is_grounded=True,
+            verification_confidence=1.0,
+            unsupported_claims=[],
+            conflict_detected=conflict,
+        )
+
+    abstention = should_abstain(
+        retrieval_confidence=confidence,
+        verification=VerificationSummary(
+            is_grounded=verification_result.is_grounded,
+            conflict_detected=verification_result.conflict_detected,
+        ),
+        retrieval_threshold=ABSTAIN_RETRIEVAL_THRESHOLD,
+    ) if ENABLE_ABSTENTION else None
+
+    abstained = bool(abstention.abstained) if abstention is not None else False
+    abstain_reason = abstention.reason if abstention is not None else None
+    source_documents: List[SourceMetadata] = []
+    if not abstained:
+        source_documents = [serialize_source_document(doc) for doc in docs]
+
+    if abstained:
+        answer = "I do not have enough reliable information to answer this."
+
     memory.chat_memory.add_user_message(payload.prompt.strip())
     memory.chat_memory.add_ai_message(answer)
 
-    sources = [serialize_source_document(doc) for doc in docs]
-    source_names = [s.source for s in sources]
+    sources = source_documents
+    source_names = [s.source for s in source_documents]
     total_ms = (time.perf_counter() - t0) * 1000
 
     # Build justification records for the API response
     rank_changes = result.rank_changes
-    justification = [
+    justification = [] if abstained else [
         {
             "rank": i + 1,
             "source": Path(str(docs[i].metadata.get("source", "unknown"))).name,
@@ -723,9 +1137,39 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         answer=answer, confidence=confidence,
         sources=source_names, latency_ms=total_ms,
         conflict_detected=conflict,
+        route=route_name,
+        query_type=query_type,
+        verification_confidence=verification_result.verification_confidence,
+        abstained=abstained,
+        abstain_reason=abstain_reason,
     )
 
     query_id = f"{organization}:{username}:{int(t0 * 1000)}"
+    trace_id = str(uuid4())
+    trace_payload = build_query_trace_payload(
+        query=query,
+        tenant_id=resolved_tenant_id,
+        query_type=query_type,
+        route=route_name,
+        result=result,
+        final_sources=sources,
+        verification_result=verification_result,
+        confidence=confidence,
+        abstained=abstained,
+        abstain_reason=abstain_reason,
+        latency_ms=total_ms,
+    )
+    trace_payload["trace_id"] = trace_id
+    try:
+        query_trace_db.store_query_trace(
+            tenant_id=resolved_tenant_id,
+            query=query,
+            trace=trace_payload,
+            trace_id=trace_id,
+        )
+    except Exception:
+        # Tracing must not break the chat path.
+        pass
 
     return ChatResponse(
         answer=answer, sources=sources, username=username,
@@ -736,8 +1180,151 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         latency_ms=round(total_ms, 1),
         ttft_ms=round(ttft_ms, 1),
         justification=justification,
+        verification={
+            "is_grounded": verification_result.is_grounded,
+            "verification_confidence": round(verification_result.verification_confidence, 4),
+            "unsupported_claims": verification_result.unsupported_claims,
+            "conflict_detected": verification_result.conflict_detected,
+        },
+        abstained=abstained,
+        abstain_reason=abstain_reason,
+        route=route_name,
+        query_type=query_type,
         query_id=query_id,
     )
+
+
+def build_query_trace_payload(
+    *,
+    query: str,
+    tenant_id: str,
+    query_type: str,
+    route: str,
+    result: RetrievalResult,
+    final_sources: List[SourceMetadata],
+    verification_result: VerificationResult,
+    confidence: float,
+    abstained: bool,
+    abstain_reason: Optional[str],
+    latency_ms: float,
+) -> Dict[str, Any]:
+    return {
+        "query": query,
+        "tenant_id": tenant_id,
+        "query_type": query_type,
+        "route": route,
+        "retrieval": {
+            "bm25_topk": result.sparse_topk,
+            "dense_topk": result.dense_topk,
+            "rrf_fused": result.fused_topk,
+            "reranked": result.reranked_topk,
+        },
+        "final_context": [source.model_dump() for source in final_sources],
+        "verification": {
+            "is_grounded": verification_result.is_grounded,
+            "verification_confidence": round(verification_result.verification_confidence, 4),
+            "unsupported_claims": verification_result.unsupported_claims,
+            "conflict_detected": verification_result.conflict_detected,
+        },
+        "abstained": abstained,
+        "abstain_reason": abstain_reason,
+        "latency_ms": round(latency_ms, 1),
+        "confidence": round(confidence, 4),
+    }
+
+
+def _load_latest_eval_abstention_metrics() -> EvalAbstentionMetricsResponse:
+    history = _load_recent_eval_abstention_metrics(limit=1)
+    if not history.items:
+        raise FileNotFoundError("No evaluation artifact found. Run eval.py first.")
+    return history.items[0]
+
+
+def _load_recent_eval_abstention_metrics(limit: int = 5) -> EvalAbstentionMetricsHistoryResponse:
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    candidates = [
+        ROOT_DIR / "eval_pgvector.json",
+        ROOT_DIR / "eval_results.json",
+    ]
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
+        raise FileNotFoundError("No evaluation artifact found. Run eval.py first.")
+
+    sorted_paths = sorted(existing, key=lambda p: p.stat().st_mtime, reverse=True)
+    items: List[EvalAbstentionMetricsResponse] = []
+    errors: List[str] = []
+
+    for artifact in sorted_paths[:limit]:
+        try:
+            raw = json.loads(artifact.read_text(encoding="utf-8"))
+            summaries = raw.get("summaries", [])
+            if not isinstance(summaries, list) or not summaries:
+                errors.append(f"{artifact.name}: missing 'summaries'")
+                continue
+
+            modes: Dict[str, EvalAbstentionModeMetrics] = {}
+            for summary in summaries:
+                if not isinstance(summary, dict):
+                    continue
+                mode = str(summary.get("mode", "unknown"))
+                modes[mode] = EvalAbstentionModeMetrics(
+                    abstention_precision=float(summary.get("abstention_precision", 0.0) or 0.0),
+                    abstention_recall=float(summary.get("abstention_recall", 0.0) or 0.0),
+                    abstention_f1=float(summary.get("abstention_f1", 0.0) or 0.0),
+                    false_abstentions=int(summary.get("false_abstentions", 0) or 0),
+                    false_abstention_rate=float(summary.get("false_abstention_rate", 0.0) or 0.0),
+                )
+
+            if not modes:
+                errors.append(f"{artifact.name}: no valid mode summaries")
+                continue
+
+            items.append(
+                EvalAbstentionMetricsResponse(
+                    source_file=artifact.name,
+                    generated_at=datetime.fromtimestamp(artifact.stat().st_mtime, tz=timezone.utc),
+                    release_tag=(
+                        raw.get("release_tag")
+                        or raw.get("release")
+                        or raw.get("version")
+                    ),
+                    model_version=raw.get("model_version"),
+                    git_commit=(
+                        raw.get("git_commit")
+                        or raw.get("commit")
+                        or raw.get("sha")
+                    ),
+                    modes=modes,
+                )
+            )
+        except Exception as exc:
+            errors.append(f"{artifact.name}: {exc}")
+
+    if not items:
+        raise ValueError("No valid evaluation artifacts found. " + "; ".join(errors))
+
+    return EvalAbstentionMetricsHistoryResponse(items=items)
+
+
+def _resolve_eval_artifact_path(source_file: str) -> Path:
+    if not source_file or source_file.strip() != source_file:
+        raise ValueError("source_file is required")
+    if "/" in source_file or "\\" in source_file:
+        raise ValueError("Invalid source_file")
+
+    allowed = {
+        "eval_pgvector.json",
+        "eval_results.json",
+    }
+    if source_file not in allowed:
+        raise ValueError("Unsupported source_file")
+
+    path = ROOT_DIR / source_file
+    if not path.exists():
+        raise FileNotFoundError(f"Evaluation artifact not found: {source_file}")
+    return path
 
 
 @app.post("/api/admin/upload", response_model=UploadResponse)
@@ -830,6 +1417,88 @@ def reconcile_storage(
     )
 
 
+@app.get("/api/admin/traces", response_model=List[QueryTraceRecord])
+def list_admin_traces(
+    tenant_id: Optional[str] = None,
+    limit: int = 50,
+    query_type: Optional[str] = None,
+    abstained: Optional[bool] = None,
+    low_confidence: bool = False,
+    current_user: TokenPayload = Depends(get_current_user),
+) -> List[QueryTraceRecord]:
+    require_admin_user(current_user)
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
+
+    resolved_tenant_id = query_trace_db.resolve_tenant_id(
+        tenant_id=current_user.tenant_id,
+        organization=current_user.organization,
+    )
+    if tenant_id and tenant_id.strip() != resolved_tenant_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins can only inspect their own tenant traces")
+
+    traces = query_trace_db.list_query_traces(
+        tenant_id=resolved_tenant_id,
+        limit=limit,
+        query_type=query_type,
+        abstained=abstained,
+        low_confidence=low_confidence,
+    )
+    return [QueryTraceRecord(**trace) for trace in traces]
+
+
+@app.get("/api/admin/eval/abstention-metrics", response_model=EvalAbstentionMetricsResponse)
+def get_admin_eval_abstention_metrics(
+    current_user: TokenPayload = Depends(get_current_user),
+) -> EvalAbstentionMetricsResponse:
+    require_admin_user(current_user)
+    try:
+        return _load_latest_eval_abstention_metrics()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/eval/abstention-metrics/history", response_model=EvalAbstentionMetricsHistoryResponse)
+def get_admin_eval_abstention_metrics_history(
+    limit: int = 5,
+    current_user: TokenPayload = Depends(get_current_user),
+) -> EvalAbstentionMetricsHistoryResponse:
+    require_admin_user(current_user)
+    try:
+        return _load_recent_eval_abstention_metrics(limit=limit)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/eval/artifact")
+def get_admin_eval_artifact(
+    source_file: str,
+    current_user: TokenPayload = Depends(get_current_user),
+) -> Dict[str, Any]:
+    require_admin_user(current_user)
+    try:
+        artifact_path = _resolve_eval_artifact_path(source_file)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    try:
+        raw = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Invalid JSON in {source_file}") from exc
+
+    return {
+        "source_file": artifact_path.name,
+        "generated_at": datetime.fromtimestamp(artifact_path.stat().st_mtime, tz=timezone.utc).isoformat(),
+        "artifact": raw,
+    }
+
+
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
@@ -867,7 +1536,7 @@ def submit_feedback(
 
 @app.post("/api/chat/stream")
 async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
-    """Server-Sent Events streaming variant of /api/chat.
+    """Server-Sent Events variant with buffered parity to /api/chat.
 
     Emits:
       data: {"type": "meta", "confidence": ..., "sources": [...], ...}  (first)
@@ -893,101 +1562,44 @@ async def chat_stream(payload: ChatRequest, request: Request) -> StreamingRespon
             yield f'data: {{"type": "error", "detail": "{exc.detail}"}}\n\n'
         return StreamingResponse(_err2(), media_type="text/event-stream")
 
-    organization = str(claims.organization).strip()
-    username = str(claims.username).strip()
-    role = str(claims.role).strip().lower()
-    tenant_id = (claims.tenant_id or "").strip() or None
-
     async def event_stream() -> AsyncIterator[str]:
-        import asyncio
         try:
-            _rate_limiter.check(organization)
+            processed = process_chat_query(payload, claims)
+            response = processed.response
         except HTTPException as exc:
-            yield f'data: {{"type": "error", "detail": "{exc.detail}"}}\n\n'
+            yield f'data: {json.dumps({"type": "error", "detail": str(exc.detail)})}\n\n'
+            return
+        except Exception as exc:
+            yield f'data: {json.dumps({"type": "error", "detail": f"Stream failed: {exc}"})}\n\n'
             return
 
-        embeddings = load_embeddings()
-        llm = ChatGroq(model=MODEL_NAME, temperature=0, api_key=SecretStr(os.getenv("GROQ_API_KEY", "")))
-        memory = get_or_create_memory(username, organization)
-        rewritten = rewrite_query(payload.prompt.strip(), memory, llm)
-
-        source_weights = get_feedback_store().get_source_weights(organization)
-        retriever = build_hybrid_retriever(
-            embeddings,
-            organization,
-            tenant_id,
-            source_weights=source_weights,
-        )
-        result: RetrievalResult = retriever.retrieve(rewritten)
-        docs = result.final_docs
-        confidence = result.confidence
-
-        if not docs:
-            yield 'data: {"type": "error", "detail": "No relevant documents found"}\n\n'
-            return
-
-        sources = [serialize_source_document(d) for d in docs]
-        conflict = detect_conflict(docs)
-
-        # Emit metadata first so the frontend can render confidence / sources
         meta = {
             "type": "meta",
-            "confidence": round(confidence, 4),
-            "confidence_label": confidence_label(confidence),
-            "conflict_detected": conflict,
-            "sources": [s.model_dump() for s in sources],
+            "confidence": response.confidence,
+            "confidence_label": response.confidence_label,
+            "conflict_detected": response.conflict_detected,
+            "sources": [s.model_dump() for s in response.sources],
+            "verification": response.verification,
+            "abstained": response.abstained,
+            "abstain_reason": response.abstain_reason,
+            "route": response.route,
+            "query_type": response.query_type,
         }
         yield f"data: {json.dumps(meta)}\n\n"
 
-        context = "\n\n---\n\n".join(
-            f"[Source: {Path(d.metadata.get('source', 'unknown')).name}]\n{d.page_content}"
-            for d in docs
-        )
-        messages_list = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"Question: {rewritten}\n\nContext:\n{context}"),
-        ]
-
-        t0 = time.perf_counter()
-        ttft_ms = 0.0
-        answer_parts: List[str] = []
-        first_token = True
-
-        try:
-            for chunk in llm.stream(messages_list):
-                token_text = chunk.content
-                if token_text:
-                    if first_token:
-                        ttft_ms = (time.perf_counter() - t0) * 1000
-                        first_token = False
-                        yield f'data: {{"type": "ttft", "ttft_ms": {ttft_ms:.1f}}}\n\n'
-                    answer_parts.append(token_text)
-                    safe = token_text.replace('"', '\\"').replace("\n", "\\n")
-                    yield f'data: {{"type": "token", "content": "{safe}"}}\n\n'
-                    await asyncio.sleep(0)  # yield control to event loop
-        except Exception as exc:
-            yield f'data: {{"type": "error", "detail": "Stream failed: {exc}"}}\n\n'
-            return
-
-        answer = "".join(answer_parts).strip()
-        total_ms = (time.perf_counter() - t0) * 1000
-        query_id = f"{organization}:{username}:{int(t0 * 1000)}"
-
-        memory.chat_memory.add_user_message(payload.prompt.strip())
-        memory.chat_memory.add_ai_message(answer)
-        write_audit_log(
-            username=username, org_id=organization,
-            query=payload.prompt.strip(), rewritten_query=rewritten,
-            answer=answer, confidence=confidence,
-            sources=[s.source for s in sources],
-            latency_ms=total_ms, conflict_detected=conflict,
-        )
+        yield f"data: {json.dumps({'type': 'ttft', 'ttft_ms': round(response.ttft_ms, 1)})}\n\n"
+        for token_text in processed.buffered_tokens:
+            if token_text:
+                yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
+                await asyncio.sleep(0)
 
         done = {
             "type": "done",
-            "latency_ms": round(total_ms, 1),
-            "ttft_ms": round(ttft_ms, 1),
-            "query_id": query_id,
+            "latency_ms": response.latency_ms,
+            "ttft_ms": response.ttft_ms,
+            "query_id": response.query_id,
+            "status": response.status,
+            "abstained": response.abstained,
         }
         yield f"data: {json.dumps(done)}\n\n"
 

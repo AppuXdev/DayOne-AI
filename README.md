@@ -1,5 +1,26 @@
 # DayOne AI
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Production-Grade-0ea5e9?style=for-the-badge" alt="Production Grade" />
+  <img src="https://img.shields.io/badge/Multi--Tenant-Isolation-22c55e?style=for-the-badge" alt="Multi Tenant Isolation" />
+  <img src="https://img.shields.io/badge/RAG-Evaluation%20First-f59e0b?style=for-the-badge" alt="Evaluation First" />
+</p>
+
+<p align="center">🚀 • 🧠 • 🔍 • 📊 • 🛡️</p>
+
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#-what-makes-this-different">Why This Stands Out</a> •
+  <a href="#key-features">Features</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="#-evaluation">Evaluation</a> •
+  <a href="#-setup">Setup</a> •
+  <a href="#-demo">Demo</a>
+</p>
+
+> ### 🔥 Built To Be Trusted In Production
+> Multi-tenant safety, retrieval explainability, and measurable quality are treated as hard product constraints.
+
 Production-grade, multi-tenant retrieval system with measurable guarantees.
 
 Onboarding should not require guesswork, especially when policies are ambiguous.
@@ -15,6 +36,8 @@ It combines hybrid retrieval, cross-encoder reranking, feedback-weighted ranking
 
 The system was migrated from FAISS to PostgreSQL pgvector only after explicit parity validation, ensuring no loss in retrieval quality.
 
+---
+
 ## Overview
 
 DayOne AI is a multi-tenant knowledge assistant platform for organizations that need reliable policy answers under real-world ambiguity.
@@ -27,6 +50,8 @@ It includes:
 - MinIO for document object storage and lifecycle consistency checks
 - In-process conversation memory (Redis is provisioned in infra; persistence migration path is prepared)
 - Streamlit interface for fast internal ops and live streaming interaction
+
+---
 
 ## 🚀 What Makes This Different
 
@@ -50,6 +75,8 @@ These constraints are not edge cases.
 
 **They are the system.**
 
+---
+
 ## 🧠 Problem
 
 The core challenge is simple:
@@ -68,20 +95,31 @@ Naive RAG systems fail for a simple reason:
 
 DayOne AI treats these as system constraints, not edge cases.
 
+---
+
 ## Key Features
+
+<p align="center">✨ High-signal capabilities, purpose-built for real deployment conditions</p>
 
 - Multi-tenant enforcement at every layer
 - DB-only auth and user management (`DATABASE_URL` required at runtime)
 - Hybrid retrieval: BM25 + dense retrieval + Reciprocal Rank Fusion
 - Cross-encoder reranking for precision-critical answers
 - Explainable retrieval with justification records and source transparency
+- Verification and abstention controls with explicit uncertainty handling
 - Feedback-weighted retrieval that updates source influence over time
 - Drift detection for semantic policy change tracking
 - Evaluation harness with benchmark metrics, parity validation, and stabilization gates
 - Streaming responses over SSE and Streamlit for low-friction user interaction
+- Shared chat and streaming pipeline for behavior parity across response modes
+- Admin debug panel with trace introspection, rank movement analysis, and trend telemetry
 - Lifecycle-aware ingestion with document status transitions and reconciliation
 
+---
+
 ## ⚙️ Architecture
+
+<p align="center">🏗️ Clear boundaries, explicit contracts, cloud-ready composition</p>
 
 ### System Overview
 
@@ -97,10 +135,13 @@ All components are designed to be stateless or externally backed, enabling strai
 
 In practice, this means deployment can scale without redesigning core interfaces.
 
+<p align="center">⚙️ Architecture that scales without redesign</p>
+
 ### High-level components
 
 - API Layer (FastAPI)
   - Auth, chat APIs, admin APIs, upload and ingestion endpoints, feedback, streaming
+  - Shared processing path for `/api/chat` and `/api/chat/stream` to enforce routing, verification, and abstention parity
   - Login requires `username`, `password`, and `organization`; JWT carries `tenant_id`
 - Retrieval Layer
   - Candidate generation (sparse + dense), fusion, reranking, confidence estimation
@@ -112,6 +153,7 @@ In practice, this means deployment can scale without redesigning core interfaces
   - In-memory conversation store in current runtime
 - Product Layer
   - Next.js app for employees and admins
+  - Admin debug workspace for retrieval traces, abstention metrics, and regression-oriented telemetry
   - Streamlit interface for rapid internal operations
 
 ### Query data flow
@@ -138,7 +180,11 @@ Operational endpoint:
 
 - `POST /api/admin/storage/reconcile` verifies and repairs object/DB consistency for the tenant scope
 
+---
+
 ## 🔍 Retrieval Pipeline
+
+<p align="center">🔬 Precision + recall + interpretability, tuned as a single system</p>
 
 ### Why hybrid retrieval
 
@@ -172,7 +218,11 @@ Retrieval outputs include candidate reasoning signals:
 
 This is critical for production trust and incident response.
 
+---
+
 ## 📊 Evaluation
+
+<p align="center">📏 Reliability measured continuously, not assumed once</p>
 
 **Evaluation is a system feature, not a notebook afterthought.**
 
@@ -196,6 +246,25 @@ The benchmark set includes mixed query categories:
 - Average latency and time-to-first-token
 - Confidence behavior
 - Error category distribution
+- Abstention precision, recall, and F1
+- False abstention count and false abstention rate
+
+### Operational telemetry and debug workflow
+
+Evaluation metrics are surfaced in the admin debug UI as an operational layer, not just offline reports.
+
+The dashboard includes:
+
+- Per-mode abstention metrics (precision, recall, F1, false abstentions)
+- Recent-trend sparkline view across latest runs
+- Trend direction and volatility labels for fast triage
+- Combined status chips (for example, improving, unstable, regression gate risk)
+- Severity-sorted issue strip with mode focus controls
+- Regression chip links to raw evaluation artifact for fast root-cause inspection
+
+This makes the system state readable at a glance while preserving deep drill-down paths when needed.
+
+<p align="center">📈 Decision-grade telemetry for operational confidence</p>
 
 ### FAISS to pgvector parity validation
 
@@ -226,6 +295,8 @@ The stabilization gate enforces release-level guarantees and prevents unverified
 Gate implementation detail:
 
 - The current gate compares `eval_pgvector.json` against immutable baseline in `scripts/legacy_benchmark/faiss_baseline_org_acme.json`
+
+---
 
 ## 🧱 System Design Decisions
 
@@ -271,7 +342,11 @@ Documents are managed through explicit states to avoid silent inconsistency:
 
 MinIO and PostgreSQL reconciliation prevents drift between object and metadata layers.
 
+---
+
 ## ⚠️ Failure Modes
+
+<p align="center">🛟 Risks are visible, documented, and mitigation-oriented</p>
 
 Known limitations and active risk areas:
 
@@ -299,7 +374,13 @@ Mitigation:
 
 These limitations are actively monitored and prioritized over feature expansion.
 
+<p align="center">🧯 Known risks are documented, observable, and actionable</p>
+
+---
+
 ## 🚀 Setup
+
+<p align="center">⚡ Minimal setup path to get from clone to validated run</p>
 
 ### Prerequisites
 
@@ -352,7 +433,11 @@ docker compose -f infra/docker-compose.yml up --build
 powershell -ExecutionPolicy Bypass -File scripts/stabilization_gate.ps1 -Org org_acme
 ```
 
+---
+
 ## 🎬 Demo
+
+<p align="center">🎥 Structured flow for showing product value quickly and credibly</p>
 
 This is designed to be shown, not just described.
 
@@ -371,6 +456,15 @@ The system is designed to be demonstrated end-to-end without hidden setup or man
 - Trigger ingestion and monitor lifecycle status
 - Validate drift report after document updates
 - Run storage reconciliation endpoint to detect mismatches
+- Inspect retrieval traces and Top-K rank movement in admin debug
+- Monitor abstention trends and regression risk before rollout decisions
+
+### Key admin evaluation endpoints
+
+- `GET /api/admin/eval/abstention-metrics` returns latest per-mode abstention metrics
+- `GET /api/admin/eval/abstention-metrics/history?limit=5` returns recent metric history for trend analysis
+- `GET /api/admin/eval/artifact?source_file=...` returns raw evaluation artifact JSON for audit and debugging
+- `GET /api/admin/traces` returns tenant-scoped query traces with routing, retrieval, verification, and abstention context
 
 ### Suggested live demo script
 
@@ -379,6 +473,8 @@ The system is designed to be demonstrated end-to-end without hidden setup or man
 3. Ask the same question before and after update
 4. Show changed retrieval evidence and answer grounding
 5. Run evaluation and stabilization gate to demonstrate measurable reliability
+
+---
 
 ## Repository Structure
 
@@ -390,11 +486,17 @@ The system is designed to be demonstrated end-to-end without hidden setup or man
 - backend/services: auth, user, document, embedding, and storage adapters
 - scripts: DB init, stabilization gate, and ops utilities
 
+---
+
 ## Why This Project Matters
+
+<p align="center">🏁 From prototype behavior to production confidence</p>
 
 DayOne AI demonstrates production ML systems engineering where retrieval quality, tenant safety, and operational correctness are treated as enforceable properties.
 
 This is the difference between a RAG demo and a deployable multi-tenant AI system.
+
+<p align="center">✨ Built for trust, not just output ✨</p>
 
 ---
 
