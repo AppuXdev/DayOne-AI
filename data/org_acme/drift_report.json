@@ -1,0 +1,11 @@
+{
+  "organization": "org_acme",
+  "document": "smoke_policy_upload.csv",
+  "timestamp": "2026-04-19T03:48:02.837944+00:00",
+  "new_chunks": 0,
+  "removed_chunks": 0,
+  "changed_chunks": 0,
+  "unchanged_chunks": 2,
+  "diffs": [],
+  "summary": "No significant policy changes detected."
+}

@@ -1,77 +1,140 @@
 ﻿# DayOne AI
 
-Multi-tenant HR onboarding assistant with retrieval-augmented generation (RAG), Streamlit and Next.js frontends, and a FastAPI backend.
+DayOne AI is a multi-tenant HR knowledge copilot designed like a SaaS product: secure organization boundaries, admin controls, real-time chat, and continuous content updates.
 
-## Latest Updates (April 2026)
+It helps teams answer policy, benefits, and onboarding questions in seconds, grounded in each tenant's own documents.
 
-- Added tenant-scoped admin user management in Streamlit and FastAPI.
-- Added feedback-weighted retrieval via `/api/feedback` and `feedback.py`.
-- Added SSE chat streaming endpoint `/api/chat/stream` with TTFT events.
-- Added semantic drift reporting endpoint `/api/admin/drift-report`.
-- Enabled auto-ingest watcher for `data/org_*/` changes.
-- Stabilized Streamlit auth (`streamlit-authenticator`, `auto_hash=False`).
-- Added sample PDF generation utility (`generate_sample_pdfs.py`).
+## Product Snapshot
 
-## Core Capabilities
+- Multi-tenant architecture with tenant-isolated data and indexes.
+- Hybrid retrieval stack (FAISS + BM25 + RRF) with optional reranking.
+- Real-time streaming chat via Server-Sent Events (SSE).
+- Admin workspace for uploads, user administration, and drift reporting.
+- Feedback loop that improves retrieval quality over time.
 
-- Hybrid retrieval: FAISS dense + BM25 sparse + RRF fusion.
+## Why This Feels Like SaaS
+
+- Tenant isolation by design:
+  - Data layout and vector indexes are separated per organization.
+- Role-based experiences:
+  - Employee chat and admin workflows are distinct.
+- Operational tooling:
+  - Auto-ingest watcher, health endpoint, evaluation harness, and test suite.
+- API-first foundation:
+  - FastAPI backend powers both Streamlit and Next.js clients.
+
+## Key Features
+
+### Employee Experience
+
+- Ask natural-language HR questions and receive grounded answers.
+- View confidence signals and source-backed rationale.
+- Submit feedback on response quality.
+
+### Admin Experience
+
+- Upload tenant documents and trigger index refresh.
+- Manage tenant users (create, update, delete).
+- Review semantic drift trends for governance and quality checks.
+
+### Platform Capabilities
+
+- Retrieval pipeline: FAISS dense retrieval + BM25 sparse retrieval + RRF fusion.
 - Optional cross-encoder reranker (`DAYONE_USE_RERANKER=1` by default).
-- Tenant-isolated document and index layout (`data/org_*`, `vector_store/org_*`).
-- JWT auth and role-based API authorization.
-- Admin upload flow with index rebuild and drift summary.
-- Evaluation harness with deterministic Tier 1 and optional judge mode.
+- Streaming endpoint (`/api/chat/stream`) with TTFT event support.
+- Tenant-level limits and configurable auth/session controls.
+
+## Architecture
+
+### Frontends
+
+- Streamlit app ([app.py](app.py)):
+  - Employee chat + admin portal in one UI.
+- Next.js app ([app/page.tsx](app/page.tsx)):
+  - Routes for landing, login, chat, and admin dashboards.
+
+### Backend
+
+- FastAPI API server ([main.py](main.py)).
+- Auth: JWT-based API auth plus Streamlit authenticator support.
+- Core services:
+  - Retrieval ([retriever.py](retriever.py))
+  - Ingestion ([ingest.py](ingest.py))
+  - Auto-ingest watcher ([auto_ingest.py](auto_ingest.py))
+  - Feedback weighting ([feedback.py](feedback.py))
+  - Drift analysis ([drift.py](drift.py))
+
+## API Overview
+
+Auth:
+
+- `POST /auth/login`
+
+Chat and feedback:
+
+- `POST /api/chat`
+- `POST /api/chat/stream`
+- `POST /api/feedback`
+
+Admin endpoints:
+
+- `POST /api/admin/upload`
+- `GET /api/admin/drift-report`
+- `GET /api/admin/users`
+- `POST /api/admin/users`
+- `PATCH /api/admin/users/{username}`
+- `DELETE /api/admin/users/{username}`
+
+Operations:
+
+- `GET /health`
+
+## Multi-Tenant Data Model
+
+- Source content: [data/org_acme](data/org_acme), [data/org_globex](data/org_globex), and other `data/org_<tenant>` folders.
+- Per-tenant vector index: `vector_store/org_<tenant>/index.faiss`.
+- Cache manifests and partitioned parts under `vector_cache/org_<tenant>/`.
+- Watcher monitors tenant folders for `.pdf` and `.csv` changes.
 
 ## Tech Stack
 
-- Python: Streamlit, FastAPI, LangChain, FAISS, sentence-transformers.
-- LLM: Groq `llama3-8b-8192`.
-- Frontend: Next.js App Router + React + TypeScript.
-- Auth: `streamlit-authenticator` (Streamlit) and JWT (FastAPI).
+- Backend: Python, FastAPI, LangChain, FAISS, sentence-transformers.
+- LLM provider: Groq (`llama-3.1-8b-instant` by default via env).
+- Frontend: Next.js 14, React 18, TypeScript.
+- Streamlit auth: `streamlit-authenticator`.
 
-## Repository Map
+## Local Setup
 
-- `app.py`: Streamlit app (employee chat + admin portal + user management).
-- `main.py`: FastAPI API server.
-- `retriever.py`: Hybrid retriever and reranking.
-- `ingest.py`: Ingestion pipeline and per-tenant index build.
-- `auto_ingest.py`: Watchdog-based auto-rebuild watcher.
-- `feedback.py`: Feedback log and source reputation weights.
-- `drift.py`: Semantic drift detection helpers.
-- `eval.py`: Evaluation harness.
-- `app/`, `frontend/components/`, `lib/api.ts`: Next.js frontend.
-- `run.ps1`: One-command local bootstrap.
-
-## Prerequisites
+### Prerequisites
 
 - Python 3.10+
 - Node.js 18+
-- A valid `GROQ_API_KEY` in `.env`
+- A valid `GROQ_API_KEY`
 
-Example `.env`:
+Create `.env` in project root:
 
 ```env
 GROQ_API_KEY=your_key_here
-# Optional
+# Optional overrides
+# DAYONE_GROQ_MODEL=llama-3.1-8b-instant
+# DAYONE_USE_RERANKER=1
 # JWT_SECRET_KEY=replace_in_production
 # CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-# DAYONE_USE_RERANKER=1
 ```
 
-## Quick Start
-
-### Recommended (Windows PowerShell)
+### One-Command Bootstrap (Recommended)
 
 ```powershell
 .\run.ps1
 ```
 
-What `run.ps1` does:
+What this does:
 
-- Creates `.venv` if missing.
+- Creates `.venv` if needed.
 - Installs Python and Node dependencies.
-- Runs initial ingestion (`ingest.py`).
-- Starts watcher, FastAPI, and Next.js.
-- Starts Streamlit in the current terminal unless `-NoStreamlit` is used.
+- Runs ingestion.
+- Starts auto-ingest watcher, FastAPI, and Next.js.
+- Starts Streamlit unless `-NoStreamlit` is provided.
 
 Useful flags:
 
@@ -82,7 +145,7 @@ Useful flags:
 .\run.ps1 -UseSeparateTerminals
 ```
 
-### Manual Start
+### Manual Startup
 
 ```powershell
 .\.venv\Scripts\python.exe ingest.py
@@ -94,92 +157,14 @@ npm run dev
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-## Default Local Credentials
+## Demo Credentials (Local Only)
 
-Derived from current `config.yaml` password hashes:
+- Employee: `john_doe` / `password123`
+- Admin: `admin_acme` / `password123`
 
-- Employee: username `john_doe`, password `password123`
-- Admin: username `admin_acme`, password `password123`
+Rotate all secrets and credentials before staging or production use.
 
-Production note: rotate cookie key and credentials before external deployment.
-
-## Frontends
-
-### Streamlit (`app.py`)
-
-- Employee chat with confidence labels and source justification.
-- Admin portal for tenant file uploads and tenant user management.
-- Uses `streamlit-authenticator` with credentials from `config.yaml`.
-
-### Next.js (`app/` + `frontend/components/`)
-
-- Routes: `/`, `/login`, `/chat`, `/admin`.
-- JWT stored in `localStorage` (`dayone_token`).
-- Chat UI consumes `/api/chat/stream` SSE events.
-- Admin dashboard supports uploads, drift summary, and user management.
-
-## API Surface
-
-Auth:
-
-- `POST /auth/login`
-
-Employee/Admin:
-
-- `POST /api/chat`
-- `POST /api/chat/stream`
-- `POST /api/feedback`
-
-Admin only:
-
-- `POST /api/admin/upload`
-- `GET /api/admin/drift-report`
-- `GET /api/admin/users`
-- `POST /api/admin/users`
-- `PATCH /api/admin/users/{username}`
-- `DELETE /api/admin/users/{username}`
-
-Utility:
-
-- `GET /health`
-
-## Multi-Tenant Data Layout
-
-- Source docs: `data/org_<tenant>/...`
-- Tenant index: `vector_store/org_<tenant>/index.faiss`
-- Auto-ingest watcher monitors `data/org_*/` for `.pdf` and `.csv` changes.
-
-## Evaluation
-
-Baseline:
-
-```powershell
-.\.venv\Scripts\python.exe eval.py --org org_acme
-```
-
-With output file:
-
-```powershell
-.\.venv\Scripts\python.exe eval.py --org org_acme --output eval_results.json
-```
-
-With judge mode:
-
-```powershell
-.\.venv\Scripts\python.exe eval.py --org org_acme --judge
-```
-
-## Current Test Status (April 18, 2026)
-
-Latest run:
-
-```text
-8 passed
-```
-
-Notes:
-
-- Test suite currently passes cleanly under pytest; external Streamlit testing warnings are filtered in `pytest.ini`.
+## Quality and Evaluation
 
 Run tests:
 
@@ -187,31 +172,39 @@ Run tests:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Environment Variables
+Latest recorded status (April 2026): `8 passed`.
 
-- `GROQ_API_KEY`: required.
-- `DAYONE_GROQ_MODEL`: optional, default `llama-3.1-8b-instant`.
-- `DAYONE_USE_RERANKER`: `1` (default) or `0`.
-- `TENANT_RATE_LIMIT_RPM`: default `30`.
-- `TENANT_UPLOAD_LIMIT_PER_DAY`: default `20`.
-- `TENANT_MAX_CHUNKS`: default `50000`.
-- `ACCESS_TOKEN_EXPIRE_MINUTES`: default `1440`.
-- `JWT_SECRET_KEY`: optional, falls back to `config.yaml` cookie key.
-- `CORS_ORIGINS`: comma-separated origins.
+Run retrieval evaluation:
+
+```powershell
+.\.venv\Scripts\python.exe eval.py --org org_acme
+.\.venv\Scripts\python.exe eval.py --org org_acme --output eval_results.json
+.\.venv\Scripts\python.exe eval.py --org org_acme --judge
+```
+
+## Configuration Reference
+
+- `GROQ_API_KEY` (required)
+- `DAYONE_GROQ_MODEL` (optional)
+- `DAYONE_USE_RERANKER` (`1` or `0`)
+- `TENANT_RATE_LIMIT_RPM`
+- `TENANT_UPLOAD_LIMIT_PER_DAY`
+- `TENANT_MAX_CHUNKS`
+- `ACCESS_TOKEN_EXPIRE_MINUTES`
+- `JWT_SECRET_KEY`
+- `CORS_ORIGINS`
 
 ## Troubleshooting
 
-- Missing GROQ key in Streamlit:
-  - Add `GROQ_API_KEY` to `.env` and restart.
-- Empty tenant KB errors:
-  - Run `ingest.py` and verify documents under `data/org_*`.
-- Next.js cannot reach backend:
-  - Verify `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`.
-- Auto-ingest not triggering:
-  - Confirm `auto_ingest.py` is running and files are changed under `data/org_*/`.
+- Missing Groq API key:
+  - Add `GROQ_API_KEY` to `.env` and restart services.
+- Empty tenant knowledge base:
+  - Run ingestion and confirm docs exist under `data/org_*`.
+- Next.js cannot reach API:
+  - Confirm `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`.
+- Watcher not triggering:
+  - Ensure [auto_ingest.py](auto_ingest.py) is running and files changed under tenant folders.
 
-## Scope and Safety
+## Production Readiness Note
 
-- Answers are grounded to retrieved chunks but can still be imperfect.
-- Use HR review for policy-critical decisions.
-- Repository is suitable for local/dev workflows and prototyping.
+This repository is structured for local development, product prototyping, and internal demos. For production, enforce stronger secrets management, tenant hardening, observability, and deployment controls.
