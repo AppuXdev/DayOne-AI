@@ -33,6 +33,7 @@ yarn-error.log*
 dist/
 build/
 *.log
+.next/
 
 # Environment files
 .env
@@ -53,6 +54,12 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+
+# Generated runtime/evaluation artifacts
+vector_cache/
+eval_*.json
+data/**/.chunk_cache.pkl
+data/**/.file_hashes.json
 
 # Sensitive files (auto-detected)
 .env
