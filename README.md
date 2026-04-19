@@ -12,6 +12,33 @@ It helps teams answer policy, benefits, and onboarding questions in seconds, gro
 - Admin workspace for uploads, user administration, and drift reporting.
 - Feedback loop that improves retrieval quality over time.
 
+## Evaluation-First Approach
+
+DayOne AI treats evaluation as a release gate, not a side task.
+
+Tier 1 (default, deterministic):
+
+- Retrieval hit rate
+- Correct abstentions for negative queries
+- Precision@1 / @3 / @k (keyword-in-chunk proxy)
+- End-to-end latency and TTFT (time-to-first-token)
+- Confidence tracking and error category breakdown
+
+Tier 2 (optional judge mode):
+
+- Faithfulness: are claims grounded in retrieved context?
+- Correctness: does the answer satisfy the question intent?
+- Hallucination flag per query
+- Cache-backed judge runs for affordable repeated evaluation
+
+Commands:
+
+```powershell
+.\.venv\Scripts\python.exe eval.py --org org_acme
+.\.venv\Scripts\python.exe eval.py --org org_acme --judge
+.\.venv\Scripts\python.exe eval.py --org org_acme --judge --rerun
+```
+
 ## Why This Feels Like SaaS
 
 - Tenant isolation by design:
@@ -43,6 +70,132 @@ It helps teams answer policy, benefits, and onboarding questions in seconds, gro
 - Optional cross-encoder reranker (`DAYONE_USE_RERANKER=1` by default).
 - Streaming endpoint (`/api/chat/stream`) with TTFT event support.
 - Tenant-level limits and configurable auth/session controls.
+
+## Feedback Learning Mechanism
+
+Feedback is not a generic log. It changes ranking weights used by retrieval.
+
+Implementation summary:
+
+- Feedback is logged per organization with rating (`up` / `down`) and cited source files.
+- Per-source stats are converted into a bounded reputation score.
+- Retrieval multiplies base candidate score by source weight before final ranking.
+
+Formula used in [feedback.py](feedback.py):
+
+$$
+  \\text{net\_ratio} = \\frac{\\text{positive} - \\text{negative}}{\\max(\\text{total}, 1)}
+$$
+
+$$
+  \\text{reputation} = 0.5 + 0.5 \\cdot \\tanh(2 \\cdot \\text{net\_ratio})
+$$
+
+$$
+  \\text{weight} = 1.0 + (\\text{reputation} - 0.5)\\ \\in\\ [0.77, 1.23]
+$$
+
+Applied in [retriever.py](retriever.py):
+
+$$
+  \\text{final\_score} = \\text{base\_score} \\times \\text{source\_weight}
+$$
+
+Where `base_score` is:
+
+- Cross-encoder score when reranker is ON
+- BM25-derived score when reranker is OFF
+
+Why bounded weighting matters:
+
+- A single bad vote cannot erase a source.
+- A single good vote cannot dominate retrieval.
+- The model adapts over time while staying stable.
+
+## Drift Definition and Measurement
+
+Drift is defined as semantic change between old vs new document chunks, not as a vague trend line.
+
+Current method in [drift.py](drift.py):
+
+1. Embed old and new chunk sets.
+2. L2-normalize embeddings and compute cosine distance.
+3. For each new chunk, find nearest old chunk.
+4. Mark as `changed` if distance exceeds threshold (`DRIFT_DISTANCE_THRESHOLD`, default `0.25`).
+5. Detect `removed` and net `new` sections from unmatched counts.
+
+Report output includes:
+
+- `changed_chunks`
+- `unchanged_chunks`
+- `removed_chunks`
+- `new_chunks`
+- Per-diff snippet pairs with measured distance
+
+Operational meaning:
+
+- Drift here is embedding-level policy-content shift at chunk granularity.
+- This is document semantic versioning, not dashboard buzzwording.
+
+## Retrieval Optimization Insights
+
+Key engineering trade-offs from [retriever.py](retriever.py):
+
+- Hybrid retrieval over dense-only:
+  - Dense retrieval misses exact lexical signals (codes, policy terms, proper nouns).
+  - BM25 recovers lexical precision.
+  - RRF fuses both without fragile score normalization.
+- Reranker ON by default:
+  - Typical gain: ~10-16 percentage points precision uplift (project benchmark note).
+  - Typical cost: ~200-400 ms extra CPU latency.
+- Candidate set tuning:
+  - `CANDIDATE_K=12` balances recall and reranker compute.
+  - `FINAL_K=4` constrains context passed to the LLM.
+
+## Hard ML Problem This System Solves
+
+The core challenge is retrieval under ambiguity with strict grounding constraints.
+
+In practice, HR queries are often:
+
+- Lexically vague ("leave policy")
+- Semantically specific (carry-forward, eligibility windows)
+- Risk-sensitive (wrong answer has policy/compliance impact)
+
+The system addresses this by combining:
+
+- Dual-signal retrieval (semantic + lexical)
+- Rank fusion and cross-encoder reranking
+- Confidence and abstention behavior for low-evidence cases
+- Online source-weight adaptation from user feedback
+
+This is not model fine-tuning; it is production retrieval intelligence engineered for stability, explainability, and tenant safety.
+
+## Failure Case Example (And How We Debug It)
+
+Example query:
+
+- "Do unused leaves expire?"
+
+Observed failure pattern (pre-hardening runs):
+
+- Retrieved chunk emphasized generic leave policy language.
+- Correct carry-forward section ranked lower.
+- Answer reflected the higher-ranked but less specific chunk.
+
+Root cause:
+
+- Lexical overlap around "leave" outweighed the more specific "unused/carry-forward" intent in top candidates.
+
+Mitigations now used:
+
+- Hybrid retrieval (dense + BM25 + RRF) to reduce single-mode bias.
+- Cross-encoder reranking to promote semantically aligned chunks.
+- Source feedback weighting to down-rank repeatedly unhelpful sources.
+
+Next hardening step (planned):
+
+- Query rewriting for ambiguity resolution before retrieval.
 
 ## Architecture
 
