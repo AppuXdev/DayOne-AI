@@ -1,12 +1,14 @@
 # DayOne AI
 
+Production-grade, multi-tenant retrieval system with measurable guarantees.
+
 DayOne AI is a production-style, multi-tenant retrieval system designed to answer ambiguous policy questions with grounded, auditable responses.
 
 It is built around a simple constraint: answers must be explainable, tenant-isolated, and measurable — not just plausible.
 
 Unlike typical RAG demos, this system treats retrieval quality, data consistency, and operational safety as enforceable properties.
 
-It combines hybrid retrieval, cross-encoder reranking, feedback-weighted ranking, and lifecycle-aware ingestion into a database-native architecture.
+It combines hybrid retrieval, cross-encoder reranking, feedback-weighted ranking, and lifecycle-aware ingestion into a single, database-native system.
 
 The system was migrated from FAISS to PostgreSQL pgvector only after explicit parity validation, ensuring no loss in retrieval quality.
 
@@ -82,6 +84,8 @@ flowchart TD
   B --> E[Redis<br/>memory / cache]
 ```
 
+All components are designed to be stateless or externally backed, enabling straightforward cloud deployment without architectural changes.
+
 ### High-level components
 
 - API Layer (FastAPI)
@@ -153,6 +157,7 @@ This is critical for production trust and incident response.
 ## Evaluation
 
 Evaluation is a system feature, not a notebook afterthought.
+No retrieval change is accepted without passing this evaluation layer.
 All architectural changes (including FAISS -> pgvector migration) are gated by measured parity against this evaluation harness.
 
 ### Benchmark design
@@ -271,6 +276,8 @@ Mitigation:
 - Query rewriting and hybrid retrieval improve recall
 - Reranking prioritizes semantically aligned chunks
 
+These limitations are actively monitored and prioritized over feature expansion.
+
 ## Setup
 
 ### Prerequisites
@@ -326,6 +333,8 @@ powershell -ExecutionPolicy Bypass -File scripts/stabilization_gate.ps1 -Org org
 
 ## Demo
 
+The system is designed to be demonstrated end-to-end without hidden setup or manual intervention.
+
 ### Employee flow
 
 - Authenticate to tenant-scoped account
@@ -363,5 +372,3 @@ powershell -ExecutionPolicy Bypass -File scripts/stabilization_gate.ps1 -Org org
 DayOne AI demonstrates production ML systems engineering where retrieval quality, tenant safety, and operational correctness are treated as enforceable properties.
 
 This is the difference between a RAG demo and a deployable multi-tenant AI system.
-
-This project demonstrates how retrieval systems can be engineered with measurable guarantees, not just model-driven behavior.
