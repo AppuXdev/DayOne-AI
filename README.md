@@ -2,9 +2,12 @@
 
 Production-grade, multi-tenant retrieval system with measurable guarantees.
 
-DayOne AI is a production-style, multi-tenant retrieval system designed to answer ambiguous policy questions with grounded, auditable responses.
+Onboarding should not require guesswork, especially when policies are ambiguous.
+DayOne AI is built to answer those questions with grounded, auditable responses.
 
-It is built around a simple constraint: answers must be explainable, tenant-isolated, and measurable — not just plausible.
+It is built around a simple constraint:
+
+**Answers must be explainable, tenant-isolated, and measurable — not just plausible.**
 
 Unlike typical RAG demos, this system treats retrieval quality, data consistency, and operational safety as enforceable properties.
 
@@ -25,7 +28,7 @@ It includes:
 - In-process conversation memory (Redis is provisioned in infra; persistence migration path is prepared)
 - Streamlit interface for fast internal ops and live streaming interaction
 
-## What Makes This Different
+## 🚀 What Makes This Different
 
 This system is not a "chat with your documents" demo.
 
@@ -43,13 +46,19 @@ It is built around four enforceable properties:
 - **Strict multi-tenant isolation**  
   Every query, embedding, and document operation is scoped by tenant_id.
 
-These constraints shape every design decision in the system.
+These constraints are not edge cases.
 
-## Problem
+**They are the system.**
 
-The core problem is answering ambiguous questions with strictly grounded, tenant-safe information.
+## 🧠 Problem
 
-Naive RAG systems fail because they optimize for plausibility instead of correctness:
+The core challenge is simple:
+
+**Answer ambiguous questions with strictly grounded, tenant-safe information.**
+
+Naive RAG systems fail for a simple reason:
+
+**They optimize for plausibility instead of correctness.**
 
 - Dense-only retrieval misses exact policy terms
 - Sparse-only retrieval misses semantic intent
@@ -72,7 +81,7 @@ DayOne AI treats these as system constraints, not edge cases.
 - Streaming responses over SSE and Streamlit for low-friction user interaction
 - Lifecycle-aware ingestion with document status transitions and reconciliation
 
-## Architecture
+## ⚙️ Architecture
 
 ### System Overview
 
@@ -85,6 +94,8 @@ flowchart TD
 ```
 
 All components are designed to be stateless or externally backed, enabling straightforward cloud deployment without architectural changes.
+
+In practice, this means deployment can scale without redesigning core interfaces.
 
 ### High-level components
 
@@ -127,11 +138,16 @@ Operational endpoint:
 
 - `POST /api/admin/storage/reconcile` verifies and repairs object/DB consistency for the tenant scope
 
-## Retrieval Pipeline
+## 🔍 Retrieval Pipeline
 
 ### Why hybrid retrieval
 
-DayOne AI uses hybrid retrieval because enterprise policy search has both lexical and semantic requirements.
+DayOne AI uses hybrid retrieval because enterprise policy search has **two different needs**:
+
+- lexical precision (exact policy terms, IDs, compliance phrases)
+- semantic understanding (paraphrases, intent, ambiguity)
+
+Retrieval combines both signals:
 
 - BM25 captures exact policy terms, procedural phrases, and compliance tokens
 - Dense retrieval captures paraphrase and semantic intent
@@ -139,7 +155,9 @@ DayOne AI uses hybrid retrieval because enterprise policy search has both lexica
 
 ### Why reranking
 
-Candidate retrieval maximizes recall, while reranking maximizes final precision.
+Candidate retrieval maximizes recall.
+
+Reranking maximizes final precision.
 
 - Cross-encoder reranking improves top-answer quality when multiple near-relevant passages exist
 - It adds latency, so it is treated as an explicit quality-latency tradeoff, not a hidden default
@@ -154,9 +172,10 @@ Retrieval outputs include candidate reasoning signals:
 
 This is critical for production trust and incident response.
 
-## Evaluation
+## 📊 Evaluation
 
-Evaluation is a system feature, not a notebook afterthought.
+**Evaluation is a system feature, not a notebook afterthought.**
+
 No retrieval change is accepted without passing this evaluation layer.
 All architectural changes (including FAISS -> pgvector migration) are gated by measured parity against this evaluation harness.
 
@@ -208,11 +227,11 @@ Gate implementation detail:
 
 - The current gate compares `eval_pgvector.json` against immutable baseline in `scripts/legacy_benchmark/faiss_baseline_org_acme.json`
 
-## System Design Decisions
+## 🧱 System Design Decisions
 
 ### PostgreSQL plus pgvector over standalone FAISS
 
-Why:
+Why this choice:
 
 - Operationally simpler for multi-tenant SaaS data governance
 - Better alignment with transaction boundaries and metadata consistency
@@ -234,6 +253,8 @@ Isolation is enforced in:
 
 Goal: no cross-tenant context access even under ambiguous requests or operational failure.
 
+**Isolation is a guarantee, not a best-effort behavior.**
+
 ### Feedback-weighted ranking
 
 User feedback is not logged and ignored. It modifies source influence to improve retrieval ordering over time while preserving bounded stability.
@@ -250,7 +271,7 @@ Documents are managed through explicit states to avoid silent inconsistency:
 
 MinIO and PostgreSQL reconciliation prevents drift between object and metadata layers.
 
-## Failure Modes
+## ⚠️ Failure Modes
 
 Known limitations and active risk areas:
 
@@ -278,7 +299,7 @@ Mitigation:
 
 These limitations are actively monitored and prioritized over feature expansion.
 
-## Setup
+## 🚀 Setup
 
 ### Prerequisites
 
@@ -331,7 +352,9 @@ docker compose -f infra/docker-compose.yml up --build
 powershell -ExecutionPolicy Bypass -File scripts/stabilization_gate.ps1 -Org org_acme
 ```
 
-## Demo
+## 🎬 Demo
+
+This is designed to be shown, not just described.
 
 The system is designed to be demonstrated end-to-end without hidden setup or manual intervention.
 
@@ -372,3 +395,7 @@ The system is designed to be demonstrated end-to-end without hidden setup or man
 DayOne AI demonstrates production ML systems engineering where retrieval quality, tenant safety, and operational correctness are treated as enforceable properties.
 
 This is the difference between a RAG demo and a deployable multi-tenant AI system.
+
+---
+
+If your system cannot explain *why* it answered, it should not answer at all.
