@@ -44,9 +44,11 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
     () => apiBaseUrl ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000",
     [apiBaseUrl],
   );
+  const defaultOrganization = process.env.NEXT_PUBLIC_DEMO_ORGANIZATION ?? "org_acme";
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [organization, setOrganization] = useState(defaultOrganization);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTestCreds, setShowTestCreds] = useState(false);
@@ -57,10 +59,13 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
     setError(null);
 
     try {
-      const data = await apiRequest<Partial<AuthToken> & { detail?: string }, { username: string; password: string }>({
+      const data = await apiRequest<
+        Partial<AuthToken> & { detail?: string },
+        { username: string; password: string; organization: string }
+      >({
         url: `${apiRoot}/auth/login`,
         method: "POST",
-        data: { username, password },
+        data: { username, password, organization },
       });
 
       if (!data.access_token) {
@@ -263,6 +268,19 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
             </div>
 
             <div>
+              <label htmlFor="login-organization" className="login-label">Organization</label>
+              <input
+                id="login-organization"
+                value={organization}
+                onChange={(e) => setOrganization(e.target.value)}
+                className="login-input"
+                placeholder="org_acme"
+                autoComplete="organization"
+                required
+              />
+            </div>
+
+            <div>
               <label htmlFor="login-password" className="login-label">Password</label>
               <input
                 id="login-password"
@@ -294,11 +312,13 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
                 <div style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Test Credentials:</div>
                 <div style={{ marginBottom: "0.8rem" }}>
                   <strong>Employee:</strong><br />
+                  Organization: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>org_acme</code><br />
                   Username: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>john_doe</code><br />
                   Password: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>password123</code>
                 </div>
                 <div>
                   <strong>Admin:</strong><br />
+                  Organization: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>org_acme</code><br />
                   Username: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>admin_acme</code><br />
                   (Use "Forgot Password" to reset)
                 </div>

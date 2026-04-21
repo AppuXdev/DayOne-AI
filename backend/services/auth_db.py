@@ -13,10 +13,12 @@ from bcrypt import checkpw
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+DEFAULT_DATABASE_URL = "postgresql+psycopg://dayone:dayone@127.0.0.1:5432/dayone"
+
 
 @lru_cache(maxsize=1)
 def _database_url() -> str:
-    return os.getenv("DATABASE_URL", "").strip()
+    return os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL).strip() or DEFAULT_DATABASE_URL
 
 
 @lru_cache(maxsize=1)

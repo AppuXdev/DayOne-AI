@@ -11,6 +11,22 @@ from sqlalchemy import text
 from backend.services.auth_db import require_engine
 
 
+def _ensure_query_trace_table(conn) -> None:
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS query_traces (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                query TEXT NOT NULL,
+                trace JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+    )
+
+
 def _tenant_id_for_org(conn, organization: str) -> Optional[str]:
     row = conn.execute(
         text("SELECT id FROM tenants WHERE lower(name) = lower(:name)"),
@@ -35,6 +51,7 @@ def store_query_trace(*, tenant_id: str, query: str, trace: Dict[str, Any], trac
     engine = require_engine()
     trace_id = trace_id or str(uuid4())
     with engine.begin() as conn:
+        _ensure_query_trace_table(conn)
         conn.execute(
             text(
                 """
@@ -84,6 +101,7 @@ def list_query_traces(
     """
 
     with engine.connect() as conn:
+        _ensure_query_trace_table(conn)
         rows = conn.execute(text(query), params).mappings().all()
 
     return [

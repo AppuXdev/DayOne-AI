@@ -118,42 +118,97 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
       let buf = "";
       let meta: Partial<ChatMessage> = {};
       let accumulated = "";
+      let streamError: string | null = null;
+      let sawDone = false;
+
+      const processEventBlock = (block: string) => {
+        const dataLines = block
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trim());
+        if (dataLines.length === 0) return;
+
+        try {
+          const evt = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+          if (evt.type === "meta") {
+            meta = {
+              confidence: evt.confidence as number,
+              confidence_label: evt.confidence_label as string,
+              conflict_detected: evt.conflict_detected as boolean,
+              sources: evt.sources as ChatSource[],
+            };
+            return;
+          }
+
+          if (evt.type === "ttft") {
+            meta.ttft_ms = evt.ttft_ms as number;
+            return;
+          }
+
+          if (evt.type === "token") {
+            accumulated += String(evt.content ?? "").replace(/\\n/g, "\n").replace(/\\"/g, '"');
+            setMessages(prev => {
+              const next = [...prev];
+              next[next.length - 1] = { ...next[next.length - 1], content: accumulated };
+              return next;
+            });
+            return;
+          }
+
+          if (evt.type === "done") {
+            meta.latency_ms = evt.latency_ms as number;
+            meta.query_id = evt.query_id as string;
+            sawDone = true;
+            return;
+          }
+
+          if (evt.type === "error") {
+            streamError = String(evt.detail ?? "Stream failed.");
+          }
+        } catch {
+          // Ignore malformed event blocks so one bad chunk does not break the whole stream.
+        }
+      };
+
+      const nextEventBoundary = (value: string): { index: number; length: number } | null => {
+        const crlfIdx = value.indexOf("\r\n\r\n");
+        const lfIdx = value.indexOf("\n\n");
+        if (crlfIdx < 0 && lfIdx < 0) return null;
+        if (crlfIdx >= 0 && (lfIdx < 0 || crlfIdx <= lfIdx)) return { index: crlfIdx, length: 4 };
+        return { index: lfIdx, length: 2 };
+      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
-            if (evt.type === "meta") {
-              meta = {
-                confidence: evt.confidence as number,
-                confidence_label: evt.confidence_label as string,
-                conflict_detected: evt.conflict_detected as boolean,
-                sources: evt.sources as ChatSource[],
-              };
-            } else if (evt.type === "ttft") {
-              meta.ttft_ms = evt.ttft_ms as number;
-            } else if (evt.type === "token") {
-              accumulated += (evt.content as string).replace(/\\n/g, "\n").replace(/\\"/g, '"');
-              setMessages(prev => {
-                const next = [...prev];
-                next[next.length - 1] = { ...next[next.length - 1], content: accumulated };
-                return next;
-              });
-            } else if (evt.type === "done") {
-              meta.latency_ms = evt.latency_ms as number;
-              meta.query_id = evt.query_id as string;
-            } else if (evt.type === "error") {
-              throw new Error(evt.detail as string);
-            }
-          } catch { /* skip malformed line */ }
+        let boundary = nextEventBoundary(buf);
+        while (boundary) {
+          const block = buf.slice(0, boundary.index);
+          buf = buf.slice(boundary.index + boundary.length);
+          processEventBlock(block);
+          if (streamError || sawDone) break;
+          boundary = nextEventBoundary(buf);
         }
+
+        if (streamError || sawDone) {
+          try {
+            await reader.cancel();
+          } catch {
+            // Ignore cancellation errors after terminal events.
+          }
+          break;
+        }
+      }
+
+      if (!streamError && buf.trim()) {
+        processEventBlock(buf);
+      }
+
+      if (streamError) {
+        throw new Error(streamError);
       }
 
       setMessages(prev => {

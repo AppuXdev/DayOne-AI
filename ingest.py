@@ -237,9 +237,6 @@ def rebuild_organization_index(
             # Drift detection is non-critical — log and continue
             print(f"[{org_name}] drift detection skipped: {exc}")
 
-    if not os.getenv("DATABASE_URL", "").strip():
-        raise RuntimeError("DATABASE_URL is required for pgvector ingestion")
-
     try:
         from backend.services.embedding_db import replace_tenant_embeddings  # noqa: PLC0415
 

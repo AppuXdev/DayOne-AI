@@ -1,0 +1,3 @@
+{"timestamp": "2026-04-21T12:13:00.023579+00:00", "organization": "org_acme", "username": "john_doe", "query": "What are the core hours?", "rating": "up", "sources": [], "confidence": 0.0}
+{"timestamp": "2026-04-21T12:13:21.445799+00:00", "organization": "org_acme", "username": "john_doe", "query": "What are the core hours?", "rating": "up", "sources": ["benefits.csv"], "confidence": 0.5}
+{"timestamp": "2026-04-21T12:14:16.993119+00:00", "organization": "org_acme", "username": "john_doe", "query": "What is PTO?", "rating": "up", "sources": ["benefits.csv"], "confidence": 0.8}
