@@ -36,17 +36,7 @@ def _tenant_id_for_org(conn, organization: str) -> str:
         {"name": organization.strip()},
     ).mappings().first()
     if row is None:
-        row = conn.execute(
-            text(
-                """
-                INSERT INTO tenants (name)
-                VALUES (:name)
-                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-                RETURNING id
-                """
-            ),
-            {"name": organization.strip()},
-        ).mappings().first()
+        raise ValueError(f"Organization '{organization}' not found")
     return str(row["id"])
 
 

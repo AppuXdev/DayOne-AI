@@ -203,6 +203,26 @@ class LoginResponse(BaseModel):
     organization: str
     role: str
     expires_at: datetime
+    organization_id: Optional[str] = None
+
+
+class SignupOrgRequest(BaseModel):
+    organization_name: str = Field(min_length=1)
+    username: str = Field(min_length=3)
+    password: str = Field(min_length=8)
+
+
+class SignupOrgResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    organization: Dict[str, str]
+
+
+class OrgStatsResponse(BaseModel):
+    id: str
+    name: str
+    user_count: int
+    document_count: int
 
 
 class ChatRequest(BaseModel):
@@ -891,6 +911,39 @@ def process_chat_query(payload: ChatRequest, claims: TokenPayload) -> ProcessedQ
     return ProcessedQueryResult(response=response, buffered_tokens=_tokenize_for_stream(answer, answer_parts))
 
 
+@app.post("/auth/signup_org", response_model=SignupOrgResponse)
+def signup_org(payload: SignupOrgRequest) -> SignupOrgResponse:
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
+    
+    try:
+        # 1. Create Organization
+        tenant_id = user_db.create_organization(payload.organization_name)
+        
+        # 2. Create Admin User
+        user_db.create_user(
+            organization=payload.organization_name,
+            username=payload.username,
+            password=payload.password,
+            role=ROLE_ADMIN,
+        )
+        
+        # 3. Create Access Token
+        login_res = create_access_token(
+            username=payload.username,
+            organization=payload.organization_name,
+            role=ROLE_ADMIN,
+            tenant_id=tenant_id,
+        )
+        
+        return SignupOrgResponse(
+            access_token=login_res.access_token,
+            organization={"id": tenant_id, "name": payload.organization_name}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 @app.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest) -> LoginResponse:
     if not auth_db.is_enabled():
@@ -906,6 +959,17 @@ def login(payload: LoginRequest) -> LoginResponse:
         role=user.role,
         tenant_id=user.tenant_id,
     )
+
+
+@app.get("/api/org/me", response_model=OrgStatsResponse)
+def get_my_org_stats(current_user: TokenPayload = Depends(get_current_user)) -> OrgStatsResponse:
+    if not auth_db.is_enabled():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="DATABASE_URL is required")
+    try:
+        stats = user_db.get_org_stats(current_user.organization)
+        return OrgStatsResponse(**stats)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @app.get("/api/admin/users", response_model=List[ManagedUser])

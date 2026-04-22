@@ -23,6 +23,8 @@ type ChatMessage = {
   latency_ms?: number;
   ttft_ms?: number;
   query_id?: string;
+  abstained?: boolean;
+  abstain_reason?: string;
   feedback?: "up" | "down" | null;
   error?: boolean;
   retryPrompt?: string;
@@ -59,7 +61,25 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
+  const [minimalMode, setMinimalMode] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const isMinimal = localStorage.getItem("dayone_minimal_mode") === "true";
+    setMinimalMode(isMinimal);
+    if (isMinimal) document.body.classList.add("minimal-mode");
+  }, []);
+
+  const toggleMinimalMode = () => {
+    const newVal = !minimalMode;
+    setMinimalMode(newVal);
+    localStorage.setItem("dayone_minimal_mode", String(newVal));
+    if (newVal) {
+      document.body.classList.add("minimal-mode");
+    } else {
+      document.body.classList.remove("minimal-mode");
+    }
+  };
 
   // Auth guard + rehydrate conversation from localStorage
   useEffect(() => {
@@ -121,7 +141,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
       let streamError: string | null = null;
       let sawDone = false;
 
-      const processEventBlock = (block: string) => {
+      const processEventBlock = async (block: string) => {
         const dataLines = block
           .split("\n")
           .map((line) => line.trim())
@@ -136,6 +156,8 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
               confidence: evt.confidence as number,
               confidence_label: evt.confidence_label as string,
               conflict_detected: evt.conflict_detected as boolean,
+              abstained: evt.abstained as boolean,
+              abstain_reason: evt.abstain_reason as string,
               sources: evt.sources as ChatSource[],
             };
             return;
@@ -148,9 +170,20 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
 
           if (evt.type === "token") {
             accumulated += String(evt.content ?? "").replace(/\\n/g, "\n").replace(/\\"/g, '"');
+            
+            // Artificial cadence: slight delay between chunks for "rhythm"
+            // Adaptive: short responses feel human, long ones feel fast.
+            const baseDelay = accumulated.length > 300 ? 5 : 15;
+            const randomFactor = accumulated.length > 300 ? 10 : 20;
+            await new Promise(r => setTimeout(r, baseDelay + Math.random() * randomFactor));
+
             setMessages(prev => {
               const next = [...prev];
-              next[next.length - 1] = { ...next[next.length - 1], content: accumulated };
+              next[next.length - 1] = { 
+                ...next[next.length - 1], 
+                content: accumulated, 
+                ...meta 
+              };
               return next;
             });
             return;
@@ -188,7 +221,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         while (boundary) {
           const block = buf.slice(0, boundary.index);
           buf = buf.slice(boundary.index + boundary.length);
-          processEventBlock(block);
+          await processEventBlock(block);
           if (streamError || sawDone) break;
           boundary = nextEventBoundary(buf);
         }
@@ -204,7 +237,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
       }
 
       if (!streamError && buf.trim()) {
-        processEventBlock(buf);
+        await processEventBlock(buf);
       }
 
       if (streamError) {
@@ -283,10 +316,29 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         .chat-root { font-family:'Inter',sans-serif; min-height:100vh; background:linear-gradient(-45deg,#020617,#0b1323,#0c1a30,#060f1e); background-size:400% 400%; animation:gradientDrift 14s ease infinite; color:#f1f5f9; }
         @keyframes gradientDrift { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+        .monogram {
+          width: 56px;
+          height: 56px;
+          border-radius: 16px;
+          background: rgba(56, 189, 248, 0.1);
+          border: 1px solid rgba(56, 189, 248, 0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0 auto 1.25rem;
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: #38bdf8;
+          letter-spacing: -0.04em;
+          box-shadow: 0 0 20px rgba(56, 189, 248, 0.15);
+        }
         .chat-sidebar { position:fixed; left:0; top:0; width:280px; height:100vh; display:flex; flex-direction:column; border-right:1px solid rgba(51,65,85,0.5); background:rgba(10,18,35,0.95); backdrop-filter:blur(20px); padding:1.5rem 1.25rem; z-index:20; }
         .user-card { display:flex; align-items:center; gap:0.75rem; padding:0.875rem; border-radius:16px; border:1px solid rgba(51,65,85,0.6); background:rgba(15,23,42,0.7); margin-bottom:1rem; }
         .user-avatar { width:38px; height:38px; border-radius:50%; background:rgba(56,189,248,0.15); border:1px solid rgba(56,189,248,0.35); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.95rem; color:#38bdf8; flex-shrink:0; }
         .org-badge { border-radius:14px; border:1px solid rgba(51,65,85,0.5); background:rgba(2,6,23,0.5); padding:1rem; margin-bottom:auto; }
+        .nav-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: 12px; color: #94a3b8; text-decoration: none; font-size: 0.875rem; font-weight: 500; transition: all 0.2s; margin-bottom: 0.25rem; border: 1px solid transparent; cursor: pointer; }
+        .nav-item:hover { background: rgba(56, 189, 248, 0.05); color: #f1f5f9; }
+        .nav-item-active { background: rgba(56, 189, 248, 0.1); color: #38bdf8; border-color: rgba(56, 189, 248, 0.2); }
         .signout-btn { width:100%; border-radius:14px; border:1px solid rgba(71,85,105,0.6); background:rgba(2,6,23,0.5); padding:0.75rem 1rem; font-size:0.875rem; font-weight:500; font-family:'Inter',sans-serif; color:#94a3b8; cursor:pointer; transition:all 0.2s; margin-top:1rem; }
         .signout-btn:hover { border-color:rgba(148,163,184,0.5); background:rgba(15,23,42,0.7); color:#e2e8f0; }
         .chat-main { margin-left:280px; min-height:100vh; display:flex; flex-direction:column; }
@@ -295,19 +347,23 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         .welcome-title { font-size:2.25rem; font-weight:700; color:#f8fafc; letter-spacing:-0.04em; margin:0 0 0.75rem; }
         .suggestion-card { border-radius:16px; border:1px solid rgba(51,65,85,0.6); background:rgba(15,23,42,0.7); padding:1rem; text-align:left; font-size:0.875rem; font-family:'Inter',sans-serif; color:#cbd5e1; cursor:pointer; transition:all 0.2s; display:flex; flex-direction:column; gap:0.4rem; }
         .suggestion-card:hover { border-color:rgba(56,189,248,0.4); background:rgba(15,23,42,0.9); transform:translateY(-2px); }
-        @keyframes messageIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
-        .message-bubble { animation:messageIn 0.22s ease-out both; }
-        .user-bubble { max-width:80%; border-radius:20px 20px 6px 20px; background:#0ea5e9; padding:0.875rem 1.125rem; color:#020617; font-weight:500; box-shadow:0 4px 20px rgba(14,165,233,0.25); }
-        .assistant-bubble { max-width:80%; border-radius:20px 20px 20px 6px; border:1px solid rgba(51,65,85,0.5); background:rgba(15,23,42,0.85); padding:0.875rem 1.125rem; color:#e2e8f0; line-height:1.7; }
-        .assistant-bubble.error-bubble { border-color:rgba(244,63,94,0.3); background:rgba(244,63,94,0.06); }
+        @keyframes messageIn { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+        .message-bubble { animation:messageIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+        .user-bubble { max-width:80%; border-radius:20px 20px 6px 20px; background:#0ea5e9; padding:0.875rem 1.125rem; color:white; font-weight:500; box-shadow:0 8px 24px rgba(14, 165, 233, 0.3); border: 1px solid rgba(255,255,255,0.1); }
+        .assistant-bubble { max-width:80%; border-radius:20px 20px 20px 6px; border:1px solid rgba(51, 65, 85, 0.6); background:rgba(15, 23, 42, 0.8); padding:0.875rem 1.125rem; color:#f1f5f9; line-height:1.7; box-shadow: 0 4px 20px rgba(0,0,0,0.2); backdrop-filter: blur(12px); }
+        .assistant-bubble.error-bubble { border-color:rgba(244,63,94,0.4); background:rgba(244,63,94,0.08); }
         @keyframes cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
         .streaming-cursor { display:inline-block; width:2px; height:1em; background:#38bdf8; margin-left:2px; vertical-align:text-bottom; animation:cursor-blink 0.8s ease infinite; }
-        .meta-bar { margin-top:0.6rem; display:flex; align-items:center; flex-wrap:wrap; gap:0.5rem; }
-        .conf-badge { font-size:0.72rem; font-weight:600; padding:0.2rem 0.55rem; border-radius:20px; }
-        .conf-high { background:rgba(34,197,94,0.12); color:#86efac; border:1px solid rgba(34,197,94,0.2); }
-        .conf-medium { background:rgba(234,179,8,0.12); color:#fde68a; border:1px solid rgba(234,179,8,0.2); }
-        .conf-low { background:rgba(244,63,94,0.12); color:#fda4af; border:1px solid rgba(244,63,94,0.2); }
-        .latency-badge { font-size:0.7rem; color:#475569; }
+        .meta-bar { margin-top:0.8rem; display:flex; align-items:center; flex-wrap:wrap; gap:0.6rem; opacity: 0.8; transition: opacity 0.2s; }
+        .meta-bar:hover { opacity: 1; }
+        .conf-badge { font-size:0.72rem; font-weight:700; padding:0.35rem 0.85rem; border-radius:12px; text-transform:uppercase; letter-spacing:0.05em; transition: all 0.3s ease; }
+        .conf-high { background:rgba(34,197,94,0.12); color:#86efac; border:1px solid rgba(34,197,94,0.3); }
+        .conf-medium { background:rgba(234,179,8,0.12); color:#fde68a; border:1px solid rgba(234,179,8,0.3); }
+        .conf-low { background:rgba(244,63,94,0.12); color:#fda4af; border:1px solid rgba(244,63,94,0.3); }
+        .abstain-bubble { border: 1px solid rgba(244, 63, 94, 0.4) !important; background: rgba(244, 63, 94, 0.08) !important; box-shadow: 0 4px 12px rgba(244, 63, 94, 0.1) !important; }
+        .abstain-icon { font-size: 1.6rem; margin-bottom: 0.5rem; display: block; filter: drop-shadow(0 0 4px rgba(244, 63, 94, 0.2)); }
+        .abstain-title { font-weight: 700; color: #fda4af; margin-bottom: 0.3rem; display: block; letter-spacing: -0.01em; }
+        .latency-badge { font-size:0.7rem; color:#64748b; font-weight: 500; }
         .feedback-row { display:flex; align-items:center; gap:0.35rem; margin-top:0.5rem; }
         .thumb-btn { background:none; border:1px solid rgba(51,65,85,0.5); border-radius:8px; padding:0.25rem 0.55rem; font-size:0.85rem; cursor:pointer; transition:all 0.15s; color:#64748b; }
         .thumb-btn:hover:not(:disabled) { border-color:rgba(56,189,248,0.4); color:#38bdf8; background:rgba(56,189,248,0.05); }
@@ -337,6 +393,12 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
       <main className="chat-root">
         {/* Sidebar */}
         <aside className="chat-sidebar">
+          {/* Brand Monogram */}
+          <div className="flex items-center gap-3 mb-8 px-2">
+            <div className="monogram" style={{ margin: 0, width: "42px", height: "42px", borderRadius: "12px", fontSize: "1rem" }}>D1</div>
+            <span style={{ fontWeight: 700, fontSize: "1.1rem", color: "#f8fafc", letterSpacing: "-0.02em" }}>DayOne AI</span>
+          </div>
+
           <div className="user-card">
             <div className="user-avatar" aria-hidden="true">{avatarInitial}</div>
             <div style={{ minWidth: 0 }}>
@@ -345,9 +407,33 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
             </div>
           </div>
 
+          <nav style={{ flex: 1, marginTop: "1rem" }}>
+            <div className="nav-item nav-item-active">
+              <span>💬</span> Chat
+            </div>
+            {profile?.role === "admin" && (
+              <div className="nav-item" onClick={() => router.push("/admin")} style={{ cursor: "pointer" }}>
+                <span>📊</span> Dashboard
+              </div>
+            )}
+          </nav>
+
           <div className="org-badge">
             <p style={{ margin: 0, fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.2em", color: "#475569", fontWeight: 600 }}>Organization</p>
             <p style={{ margin: "0.4rem 0 0", fontSize: "1rem", fontWeight: 600, color: "#f1f5f9" }}>{organization}</p>
+          </div>
+
+          {/* Minimal Mode Toggle */}
+          <div style={{ padding: "1rem 0.5rem 0.5rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer", color: "#64748b", fontSize: "0.8rem" }}>
+              <input 
+                type="checkbox" 
+                checked={minimalMode} 
+                onChange={toggleMinimalMode} 
+                style={{ width: "16px", height: "16px" }}
+              />
+              Minimal Mode
+            </label>
           </div>
 
           <button onClick={signOut} className="signout-btn" aria-label="Sign out">Sign out</button>
@@ -356,8 +442,16 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         {/* Main */}
         <section className="chat-main">
           <header className="chat-header">
-            <p style={{ margin: 0, fontSize: "0.75rem", color: "#38bdf8", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.1em" }}>DayOne AI</p>
-            <h1 style={{ margin: "0.25rem 0 0", fontSize: "1.5rem", fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.03em" }}>HR Policy Assistant</h1>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <p style={{ margin: 0, fontSize: "0.75rem", color: "#38bdf8", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.1em" }}>DayOne AI</p>
+                <h1 style={{ margin: "0.25rem 0 0", fontSize: "1.5rem", fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.03em" }}>HR Policy Assistant</h1>
+              </div>
+              <div style={{ padding: "0.5rem 1rem", borderRadius: "12px", background: "rgba(56, 189, 248, 0.05)", border: "1px solid rgba(56, 189, 248, 0.1)", textAlign: "right" }}>
+                <p style={{ margin: 0, fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b" }}>Secure Tenant</p>
+                <p style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600, color: "#38bdf8" }}>{organization}</p>
+              </div>
+            </div>
           </header>
 
           <div className="chat-messages">
@@ -387,12 +481,24 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
                     </div>
                   ) : (
                     <div key={idx} className="message-bubble" style={{ display: "flex", justifyContent: "flex-start" }}>
-                      <div className={`assistant-bubble${msg.error ? " error-bubble" : ""}`}>
-                        {/* Streaming content with cursor */}
-                        <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                          {msg.content}
-                          {msg.streaming && <span className="streaming-cursor" aria-hidden="true" />}
-                        </p>
+                      <div className={`assistant-bubble${msg.error ? " error-bubble" : ""}${msg.abstained ? " abstain-bubble" : ""}`}>
+                        {/* Abstention view */}
+                        {msg.abstained ? (
+                          <div className="animate-fade-in">
+                            <span className="abstain-icon">🛡️</span>
+                            <span className="abstain-title">Information Guard</span>
+                            <p style={{ margin: "0", fontSize: "0.9rem", color: "#cbd5e1" }}>
+                              I've checked your HR files, but I cannot find a sufficiently high-confidence answer. 
+                              I've abstained from answering to prevent potential misinformation.
+                            </p>
+                          </div>
+                        ) : (
+                          /* Normal content with streaming cursor */
+                          <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                            {msg.content}
+                            {msg.streaming && <span className="streaming-cursor" aria-hidden="true" />}
+                          </p>
+                        )}
 
                         {/* Meta bar — confidence + latency */}
                         {!msg.streaming && msg.confidence !== undefined && (

@@ -16,16 +16,11 @@ EMBEDDING_DIM: int = int(os.getenv("DAYONE_EMBEDDING_DIM", "384"))
 
 def _tenant_id_for_org(conn, organization: str) -> str:
     row = conn.execute(
-        text(
-            """
-            INSERT INTO tenants (name)
-            VALUES (:name)
-            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-            RETURNING id
-            """
-        ),
+        text("SELECT id FROM tenants WHERE lower(name) = lower(:name)"),
         {"name": organization.strip()},
     ).mappings().first()
+    if row is None:
+        raise ValueError(f"Organization '{organization}' not found")
     return str(row["id"])
 
 

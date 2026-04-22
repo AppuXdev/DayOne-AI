@@ -27,27 +27,66 @@ def _hash_password(password: str) -> str:
     return hashpw(password.encode("utf-8"), gensalt()).decode("utf-8")
 
 
-def _ensure_tenant(conn, organization: str) -> str:
-    row = conn.execute(
-        text(
-            """
-            INSERT INTO tenants (name)
-            VALUES (:name)
-            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-            RETURNING id
-            """
-        ),
-        {"name": organization.strip()},
-    ).mappings().first()
-    return str(row["id"])
-
-
 def _tenant_id_for_org(conn, organization: str) -> Optional[str]:
     row = conn.execute(
         text("SELECT id FROM tenants WHERE lower(name) = lower(:name)"),
         {"name": organization.strip()},
     ).mappings().first()
     return str(row["id"]) if row else None
+
+
+def create_organization(organization_name: str) -> str:
+    """Create a new tenant (organization). Returns the tenant_id."""
+    engine = require_engine()
+    with engine.begin() as conn:
+        # Check if exists
+        exists = _tenant_id_for_org(conn, organization_name)
+        if exists:
+            raise ValueError(f"Organization '{organization_name}' already exists")
+
+        row = conn.execute(
+            text(
+                """
+                INSERT INTO tenants (name)
+                VALUES (:name)
+                RETURNING id
+                """
+            ),
+            {"name": organization_name.strip()},
+        ).mappings().first()
+        return str(row["id"])
+
+
+def get_org_stats(organization: str) -> Dict[str, Any]:
+    """Return counts of users and documents for an organization."""
+    engine = require_engine()
+    with engine.connect() as conn:
+        tenant_row = conn.execute(
+            text("SELECT id, name FROM tenants WHERE lower(name) = lower(:name)"),
+            {"name": organization.strip()},
+        ).mappings().first()
+        
+        if not tenant_row:
+            raise ValueError(f"Organization '{organization}' not found")
+            
+        tenant_id = tenant_row["id"]
+        
+        user_count = conn.execute(
+            text("SELECT COUNT(*) FROM users WHERE tenant_id = :tenant_id"),
+            {"tenant_id": tenant_id},
+        ).scalar() or 0
+        
+        doc_count = conn.execute(
+            text("SELECT COUNT(*) FROM documents WHERE tenant_id = :tenant_id AND status != 'deleted'"),
+            {"tenant_id": tenant_id},
+        ).scalar() or 0
+        
+    return {
+        "id": str(tenant_id),
+        "name": str(tenant_row["name"]),
+        "user_count": int(user_count),
+        "document_count": int(doc_count),
+    }
 
 
 def list_users_for_org(organization: str) -> List[Dict[str, Any]]:
@@ -98,7 +137,10 @@ def create_user(
         raise ValueError("Username must be at least 3 characters long")
 
     with engine.begin() as conn:
-        tenant_id = _ensure_tenant(conn, organization)
+        tenant_id = _tenant_id_for_org(conn, organization)
+        if tenant_id is None:
+            raise ValueError(f"Organization '{organization}' not found")
+        
         exists = conn.execute(
             text(
                 """

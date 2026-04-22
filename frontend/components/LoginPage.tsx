@@ -48,10 +48,9 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [organization, setOrganization] = useState(defaultOrganization);
+  const [organization, setOrganization] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showTestCreds, setShowTestCreds] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -80,14 +79,14 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
         "dayone_profile",
         JSON.stringify({
           username: decoded?.username || data.username || username,
-          organization: decoded?.organization || data.organization || "",
+          organization: decoded?.organization || data.organization || organization,
           role,
         }),
       );
 
       router.replace(role === "admin" ? "/admin" : "/chat");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to log in";
+    } catch (err: any) {
+      const message = err.response?.data?.detail || err.message || "Unable to log in";
       setError(message);
     } finally {
       setLoading(false);
@@ -95,8 +94,7 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
   }
 
   return (
-    <>
-      {/* Animated gradient background */}
+    <div className="login-root">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -106,8 +104,7 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
           background: linear-gradient(-45deg, #020617, #0b1323, #0c1a30, #060f1e);
           background-size: 400% 400%;
           animation: gradientDrift 14s ease infinite;
-          display: flex;
-          align-items: center;
+          display: flex;          align-items: center;
           justify-content: center;
           padding: 2rem 1rem;
           position: relative;
@@ -173,6 +170,7 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
           outline: none;
           transition: border-color 0.2s, box-shadow 0.2s;
           box-sizing: border-box;
+          margin-bottom: 1.25rem;
         }
 
         .login-input::placeholder { color: #475569; }
@@ -199,171 +197,83 @@ export default function LoginPage({ apiBaseUrl }: LoginPageProps) {
           padding: 0.85rem 1rem;
           font-size: 0.9rem;
           font-weight: 600;
-          font-family: 'Inter', sans-serif;
-          color: #020617;
+          color: white;
           cursor: pointer;
-          transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 0.5rem;
-          box-shadow: 0 4px 15px rgba(14, 165, 233, 0.3);
+          transition: transform 0.1s, background 0.2s;
+          margin-top: 0.5rem;
         }
 
-        .login-btn:hover:not(:disabled) {
-          background: #38bdf8;
-          box-shadow: 0 4px 20px rgba(56, 189, 248, 0.4);
-        }
-
-        .login-btn:active:not(:disabled) { transform: translateY(1px); }
-        .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .login-btn:hover { background: #0284c7; }
+        .login-btn:active { transform: scale(0.98); }
+        .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .error-box {
-          border-radius: 12px;
-          border: 1px solid rgba(244, 63, 94, 0.25);
-          background: rgba(244, 63, 94, 0.1);
+          background: rgba(239, 68, 68, 0.1);
+          border: 1px solid rgba(239, 68, 68, 0.2);
+          color: #f87171;
           padding: 0.75rem 1rem;
+          border-radius: 12px;
+          margin-bottom: 1.5rem;
           font-size: 0.85rem;
-          color: #fda4af;
-        }
-
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .spinner {
-          width: 16px;
-          height: 16px;
-          border: 2px solid rgba(2, 6, 23, 0.3);
-          border-top-color: #020617;
-          border-radius: 50%;
-          animation: spin 0.7s linear infinite;
-          flex-shrink: 0;
+          line-height: 1.4;
         }
       `}</style>
 
-      <main className="login-root">
-        <div className="login-card">
-          {/* D1 Monogram */}
-          <div className="monogram">D1</div>
+      <div className="login-card">
+        <div className="monogram">D1</div>
+        <h1 style={{ color: "white", textAlign: "center", margin: "0 0 0.5rem", fontSize: "1.5rem", fontWeight: 700 }}>Welcome Back</h1>
+        <p style={{ color: "#94a3b8", textAlign: "center", margin: "0 0 2rem", fontSize: "0.9rem" }}>Log in to your organization dashboard</p>
 
-          <div style={{ textAlign: "center", marginBottom: "2rem" }}>
-            <h1 style={{ margin: 0, fontSize: "1.75rem", fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.03em" }}>
-              DayOne AI
-            </h1>
-            <p style={{ margin: "0.4rem 0 0", fontSize: "0.875rem", color: "#64748b" }}>
-              Secure multi-tenant HR onboarding assistant
-            </p>
+        {error && <div className="error-box">{error}</div>}
+
+        <form onSubmit={handleSubmit}>
+          <div>
+            <label className="login-label">Organization</label>
+            <input
+              className="login-input"
+              type="text"
+              placeholder="e.g. Acme Corp"
+              value={organization}
+              onChange={(e) => setOrganization(e.target.value)}
+              required
+            />
           </div>
-
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1.1rem" }}>
-            <div>
-              <label htmlFor="login-username" className="login-label">Username</label>
-              <input
-                id="login-username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="login-input"
-                placeholder="Enter your username"
-                autoComplete="username"
-                required
-              />
-            </div>
-
-            <div>
-              <label htmlFor="login-organization" className="login-label">Organization</label>
-              <input
-                id="login-organization"
-                value={organization}
-                onChange={(e) => setOrganization(e.target.value)}
-                className="login-input"
-                placeholder="org_acme"
-                autoComplete="organization"
-                required
-              />
-            </div>
-
-            <div>
-              <label htmlFor="login-password" className="login-label">Password</label>
-              <input
-                id="login-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                type="password"
-                className="login-input"
-                placeholder="Enter your password"
-                autoComplete="current-password"
-                required
-              />
-            </div>
-
-            {error ? (
-              <div className="error-box" role="alert">
-                {error}
-              </div>
-            ) : null}
-
-            {showTestCreds ? (
-              <div style={{
-                borderRadius: "12px",
-                border: "1px solid rgba(34, 197, 94, 0.25)",
-                background: "rgba(34, 197, 94, 0.1)",
-                padding: "1rem",
-                fontSize: "0.85rem",
-                color: "#86efac"
-              }}>
-                <div style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Test Credentials:</div>
-                <div style={{ marginBottom: "0.8rem" }}>
-                  <strong>Employee:</strong><br />
-                  Organization: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>org_acme</code><br />
-                  Username: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>john_doe</code><br />
-                  Password: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>password123</code>
-                </div>
-                <div>
-                  <strong>Admin:</strong><br />
-                  Organization: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>org_acme</code><br />
-                  Username: <code style={{ background: "rgba(0,0,0,0.3)", padding: "0 0.25rem" }}>admin_acme</code><br />
-                  (Use "Forgot Password" to reset)
-                </div>
-              </div>
-            ) : null}
-
-            <button
-              type="submit"
-              id="login-submit-btn"
-              disabled={loading}
-              aria-label="Sign in to DayOne AI"
-              className="login-btn"
-              style={{ marginTop: "0.25rem" }}
-            >
-              {loading ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  Signing in...
-                </>
-              ) : "Sign in"}
-            </button>
-          </form>
-
-          <button
-            type="button"
-            onClick={() => setShowTestCreds(!showTestCreds)}
-            style={{
-              width: "100%",
-              marginTop: "1.25rem",
-              paddingTop: "1.25rem",
-              borderTop: "1px solid rgba(51, 65, 85, 0.5)",
-              background: "none",
-              border: "none",
-              color: "#64748b",
-              fontSize: "0.8rem",
-              cursor: "pointer",
-              transition: "color 0.2s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#94a3b8")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}
-          >
-            {showTestCreds ? "Hide" : "Show"} Test Credentials
+          <div>
+            <label className="login-label">Username</label>
+            <input
+              className="login-input"
+              type="text"
+              placeholder="Your username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label className="login-label">Password</label>
+            <input
+              className="login-input"
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+          <button className="login-btn" type="submit" disabled={loading}>
+            {loading ? "Logging in..." : "Continue"}
           </button>
-        </div>
-      </main>
-    </>
-  );
+        </form>
+
+        <p style={{ color: "#64748b", textAlign: "center", marginTop: "1.5rem", fontSize: "0.85rem" }}>
+          Don't have an organization?{" "}
+          <button 
+            onClick={() => router.push("/signup")}
+            style={{ color: "#38bdf8", background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 500 }}
+          >
+            Sign up
+          </button>
+        </p>
+      </div>
+    </div>;
 }

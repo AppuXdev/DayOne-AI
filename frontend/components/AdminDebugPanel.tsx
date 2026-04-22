@@ -98,20 +98,20 @@ function statusBadgeStyle(kind: "green" | "red" | "yellow") {
   if (kind === "green") {
     return {
       color: "#86efac",
-      background: "rgba(34, 197, 94, 0.14)",
+      background: "rgba(34, 197, 94, 0.12)",
       border: "1px solid rgba(34, 197, 94, 0.25)",
     };
   }
   if (kind === "red") {
     return {
       color: "#fda4af",
-      background: "rgba(244, 63, 94, 0.14)",
+      background: "rgba(244, 63, 94, 0.12)",
       border: "1px solid rgba(244, 63, 94, 0.25)",
     };
   }
   return {
     color: "#fde68a",
-    background: "rgba(234, 179, 8, 0.14)",
+    background: "rgba(234, 179, 8, 0.12)",
     border: "1px solid rgba(234, 179, 8, 0.25)",
   };
 }
@@ -219,8 +219,9 @@ function isInterestingRow(row: RankMovementRow): boolean {
 
 function formatDelta(delta?: number): string {
   if (typeof delta !== "number") return "-";
-  if (delta > 0) return `+${delta}`;
-  return `${delta}`;
+  if (delta > 0) return `↑${delta}`;
+  if (delta < 0) return `↓${Math.abs(delta)}`;
+  return "•";
 }
 
 function sparklineCoordinates(values: number[], width = 110, height = 32, padding = 3): Array<{ x: number; y: number }> {
@@ -620,6 +621,35 @@ export default function AdminDebugPanel() {
 
   return (
     <main style={{ minHeight: "100vh", background: "#020617", color: "#e2e8f0", fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" }}>
+      <style>{`
+        .trace-item {
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          border-left: 3px solid transparent;
+        }
+        .trace-item:hover {
+          background: rgba(56, 189, 248, 0.04);
+          transform: translateX(4px);
+        }
+        .trace-item-selected {
+          background: rgba(56, 189, 248, 0.08) !important;
+          border-left-color: #38bdf8 !important;
+          box-shadow: inset 0 0 20px rgba(56, 189, 248, 0.05);
+        }
+        .rank-table tr {
+          transition: background 0.15s ease;
+        }
+        .rank-table tr:hover {
+          background: rgba(255, 255, 255, 0.02);
+        }
+        .metric-card {
+          transition: all 0.3s ease;
+        }
+        .metric-card:hover {
+          transform: translateY(-2px);
+          border-color: rgba(56, 189, 248, 0.3) !important;
+          box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }
+      `}</style>
       <div style={{ maxWidth: 1400, margin: "0 auto", padding: "1.25rem" }}>
         <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", gap: "0.75rem", flexWrap: "wrap" }}>
           <div>
@@ -649,35 +679,35 @@ export default function AdminDebugPanel() {
           </div>
         </header>
 
-        <section style={{ border: "1px solid rgba(51, 65, 85, 0.75)", borderRadius: 14, background: "rgba(15, 23, 42, 0.55)", padding: "0.85rem", marginBottom: "1rem", display: "flex", gap: "0.7rem", flexWrap: "wrap", alignItems: "center" }}>
-          <select value={queryTypeFilter} onChange={(event) => setQueryTypeFilter(event.target.value)} style={{ borderRadius: 8, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", padding: "0.5rem 0.65rem" }}>
+        <section style={{ border: "1px solid rgba(51, 65, 85, 0.4)", borderRadius: 14, background: "rgba(15, 23, 42, 0.45)", padding: "1.25rem", marginBottom: "1.5rem", display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "center" }}>
+          <select value={queryTypeFilter} onChange={(event) => setQueryTypeFilter(event.target.value)} style={{ borderRadius: 8, border: "1px solid rgba(51, 65, 85, 0.5)", background: "#0f172a", color: "#e2e8f0", padding: "0.5rem 0.65rem" }}>
             <option value="">All query types</option>
             <option value="factual">factual</option>
             <option value="ambiguous">ambiguous</option>
             <option value="multi_hop">multi_hop</option>
             <option value="exception">exception</option>
           </select>
-          <select value={abstainedFilter} onChange={(event) => setAbstainedFilter(event.target.value)} style={{ borderRadius: 8, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", padding: "0.5rem 0.65rem" }}>
+          <select value={abstainedFilter} onChange={(event) => setAbstainedFilter(event.target.value)} style={{ borderRadius: 8, border: "1px solid rgba(51, 65, 85, 0.5)", background: "#0f172a", color: "#e2e8f0", padding: "0.5rem 0.65rem" }}>
             <option value="all">All abstention states</option>
             <option value="true">Abstained only</option>
             <option value="false">Non-abstained only</option>
           </select>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem", color: "#cbd5e1", fontSize: "0.9rem" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.6rem", color: "#cbd5e1", fontSize: "0.9rem", cursor: "pointer" }}>
             <input type="checkbox" checked={lowConfidenceFilter} onChange={(event) => setLowConfidenceFilter(event.target.checked)} />
             Low confidence only
           </label>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem", color: "#cbd5e1", fontSize: "0.9rem" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.6rem", color: "#cbd5e1", fontSize: "0.9rem", cursor: "pointer" }}>
             <input type="checkbox" checked={showTopKEvolution} onChange={(event) => setShowTopKEvolution(event.target.checked)} />
             Show Top-K Evolution
           </label>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem", color: "#cbd5e1", fontSize: "0.9rem" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.6rem", color: "#cbd5e1", fontSize: "0.9rem", cursor: "pointer" }}>
             <input type="checkbox" checked={onlyInterestingMovements} onChange={(event) => setOnlyInterestingMovements(event.target.checked)} />
             Only interesting movements
           </label>
           <button
             onClick={() => void loadTraces()}
             disabled={loading}
-            style={{ borderRadius: 8, border: "none", background: "#0ea5e9", color: "#020617", padding: "0.5rem 0.85rem", fontWeight: 700, cursor: "pointer" }}
+            style={{ borderRadius: 8, border: "none", background: "#0ea5e9", color: "#020617", padding: "0.5rem 1.25rem", fontWeight: 700, cursor: "pointer", marginLeft: "auto" }}
           >
             {loading ? "Refreshing..." : "Refresh"}
           </button>
@@ -689,30 +719,26 @@ export default function AdminDebugPanel() {
           </div>
         ) : null}
 
-        <section style={{ border: "1px solid rgba(51, 65, 85, 0.8)", borderRadius: 14, background: "rgba(15, 23, 42, 0.75)", padding: "0.85rem", marginBottom: "1rem" }}>
-          <p style={{ margin: 0, color: "#38bdf8", fontSize: "0.76rem", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>
+        <section style={{ border: "1px solid rgba(51, 65, 85, 0.4)", borderRadius: 14, background: "rgba(15, 23, 42, 0.5)", padding: "1.5rem", marginBottom: "1.5rem" }}>
+          <p style={{ margin: 0, color: "#38bdf8", fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>
             Abstention Metrics
           </p>
           {evalMetrics ? (
             <>
-              <p style={{ margin: "0.45rem 0 0", color: "#94a3b8", fontSize: "0.8rem" }}>
-                Source: <span style={{ color: "#cbd5e1" }}>{evalMetrics.source_file}</span> · Updated {new Date(evalMetrics.generated_at).toLocaleString()}
+              <p style={{ margin: "0.5rem 0 0", color: "#64748b", fontSize: "0.85rem" }}>
+                Source: <span style={{ color: "#94a3b8" }}>{evalMetrics.source_file}</span> · Updated {new Date(evalMetrics.generated_at).toLocaleString()}
               </p>
-              <div style={{ marginTop: "0.7rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.7rem" }}>
+              <div style={{ marginTop: "1rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "1rem" }}>
                 {Object.entries(evalMetrics.modes).map(([mode, metrics]) => (
-                  <div key={mode} style={{ borderRadius: 10, border: "1px solid rgba(51, 65, 85, 0.6)", background: "rgba(2, 6, 23, 0.45)", padding: "0.7rem" }}>
-                    <p style={{ margin: 0, color: "#a5f3fc", fontSize: "0.8rem", fontWeight: 700 }}>{formatModeLabel(mode)}</p>
-                    <div style={{ marginTop: "0.5rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.45rem", fontSize: "0.8rem" }}>
-                      <span style={{ color: "#94a3b8" }}>Precision</span>
+                  <div key={mode} className="metric-card" style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.4)", background: "rgba(2, 6, 23, 0.3)", padding: "1rem" }}>
+                    <p style={{ margin: 0, color: "#38bdf8", fontSize: "0.85rem", fontWeight: 700 }}>{formatModeLabel(mode)}</p>
+                    <div style={{ marginTop: "0.75rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.6rem", fontSize: "0.85rem" }}>
+                      <span style={{ color: "#64748b" }}>Precision</span>
                       <span style={{ color: "#f8fafc", fontWeight: 600 }}>{(metrics.abstention_precision * 100).toFixed(1)}%</span>
-                      <span style={{ color: "#94a3b8" }}>Recall</span>
+                      <span style={{ color: "#64748b" }}>Recall</span>
                       <span style={{ color: "#f8fafc", fontWeight: 600 }}>{(metrics.abstention_recall * 100).toFixed(1)}%</span>
-                      <span style={{ color: "#94a3b8" }}>F1</span>
+                      <span style={{ color: "#64748b" }}>F1</span>
                       <span style={{ color: "#f8fafc", fontWeight: 600 }}>{(metrics.abstention_f1 * 100).toFixed(1)}%</span>
-                      <span style={{ color: "#94a3b8" }}>False abstentions</span>
-                      <span style={{ color: "#f8fafc", fontWeight: 600 }}>{metrics.false_abstentions}</span>
-                      <span style={{ color: "#94a3b8" }}>False abstention rate</span>
-                      <span style={{ color: "#f8fafc", fontWeight: 600 }}>{(metrics.false_abstention_rate * 100).toFixed(1)}%</span>
                     </div>
                   </div>
                 ))}
@@ -866,9 +892,9 @@ export default function AdminDebugPanel() {
           )}
         </section>
 
-        <section style={{ display: "grid", gridTemplateColumns: "minmax(320px, 430px) 1fr", gap: "0.9rem" }}>
-          <aside style={{ border: "1px solid rgba(51, 65, 85, 0.8)", borderRadius: 14, background: "rgba(15, 23, 42, 0.75)", minHeight: 640, overflow: "hidden" }}>
-            <div style={{ padding: "0.75rem 0.85rem", borderBottom: "1px solid rgba(51, 65, 85, 0.6)", color: "#cbd5e1", fontWeight: 700, fontSize: "0.9rem" }}>
+        <section style={{ display: "grid", gridTemplateColumns: "minmax(320px, 430px) 1fr", gap: "1.5rem" }}>
+          <aside style={{ border: "1px solid rgba(51, 65, 85, 0.4)", borderRadius: 14, background: "rgba(15, 23, 42, 0.5)", minHeight: 640, overflow: "hidden" }}>
+            <div style={{ padding: "1.25rem", borderBottom: "1px solid rgba(51, 65, 85, 0.3)", color: "#cbd5e1", fontWeight: 700, fontSize: "0.9rem" }}>
               Recent Queries ({items.length})
             </div>
             <div style={{ maxHeight: 760, overflowY: "auto" }}>
@@ -879,14 +905,15 @@ export default function AdminDebugPanel() {
                   <button
                     key={item.id}
                     onClick={() => setSelectedId(item.id)}
+                    className={`trace-item${selectedRow ? " trace-item-selected" : ""}`}
                     style={{
                       width: "100%",
                       textAlign: "left",
                       border: "none",
-                      borderBottom: "1px solid rgba(30, 41, 59, 0.75)",
-                      background: selectedRow ? "rgba(56, 189, 248, 0.1)" : "transparent",
+                      borderBottom: "1px solid rgba(30, 41, 59, 0.4)",
+                      background: "transparent",
                       color: "inherit",
-                      padding: "0.75rem 0.85rem",
+                      padding: "1.25rem",
                       cursor: "pointer",
                     }}
                   >
@@ -916,40 +943,40 @@ export default function AdminDebugPanel() {
             </div>
           </aside>
 
-          <article style={{ border: "1px solid rgba(51, 65, 85, 0.8)", borderRadius: 14, background: "rgba(15, 23, 42, 0.75)", minHeight: 640, padding: "0.95rem" }}>
+          <article style={{ border: "1px solid rgba(51, 65, 85, 0.4)", borderRadius: 14, background: "rgba(15, 23, 42, 0.5)", minHeight: 640, padding: "1.5rem" }}>
             {!selected ? (
               <p style={{ margin: 0, color: "#64748b" }}>Select a query to inspect trace details.</p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.8rem" }}>
-                <section style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.6)", background: "rgba(2, 6, 23, 0.45)", padding: "0.8rem" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+                <section style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.4)", background: "rgba(2, 6, 23, 0.3)", padding: "1rem" }}>
                   <p style={{ margin: 0, color: "#64748b", fontSize: "0.72rem", letterSpacing: "0.08em", textTransform: "uppercase" }}>Query</p>
-                  <p style={{ margin: "0.35rem 0 0", fontSize: "1rem", color: "#f8fafc", fontWeight: 600 }}>{selected.query}</p>
+                  <p style={{ margin: "0.5rem 0 0", fontSize: "1.1rem", color: "#f8fafc", fontWeight: 600 }}>{selected.query}</p>
                 </section>
 
-                <details open style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.6)", background: "rgba(2, 6, 23, 0.45)", padding: "0.75rem" }}>
+                <details open style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.4)", background: "rgba(2, 6, 23, 0.3)", padding: "1rem" }}>
                   <summary style={{ cursor: "pointer", color: "#cbd5e1", fontWeight: 700 }}>Routing</summary>
-                  <div style={{ marginTop: "0.65rem", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
-                    <span style={{ borderRadius: 999, padding: "0.15rem 0.55rem", ...statusBadgeStyle("yellow") }}>
+                  <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                    <span style={{ borderRadius: 999, padding: "0.25rem 0.75rem", ...statusBadgeStyle("yellow") }}>
                       Query Type: {selected.trace?.query_type ?? "unknown"}
                     </span>
-                    <span style={{ borderRadius: 999, padding: "0.15rem 0.55rem", ...statusBadgeStyle("green") }}>
+                    <span style={{ borderRadius: 999, padding: "0.25rem 0.75rem", ...statusBadgeStyle("green") }}>
                       Route: {selected.trace?.route ?? "unknown"}
                     </span>
                   </div>
                 </details>
 
                 {showTopKEvolution ? (
-                  <details open style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.6)", background: "rgba(2, 6, 23, 0.45)", padding: "0.75rem" }}>
+                  <details open style={{ borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.4)", background: "rgba(2, 6, 23, 0.3)", padding: "1rem" }}>
                     <summary style={{ cursor: "pointer", color: "#cbd5e1", fontWeight: 700 }}>Retrieval Top-K Evolution</summary>
-                    <div style={{ marginTop: "0.75rem", borderRadius: 10, border: "1px solid rgba(51, 65, 85, 0.6)", overflow: "hidden" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem" }}>
+                    <div style={{ marginTop: "1rem", borderRadius: 12, border: "1px solid rgba(51, 65, 85, 0.3)", overflow: "hidden" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
                         <thead>
-                          <tr style={{ background: "rgba(15, 23, 42, 0.8)", color: "#94a3b8" }}>
-                            <th style={{ textAlign: "left", padding: "0.55rem", borderBottom: "1px solid rgba(51, 65, 85, 0.6)" }}>Chunk</th>
-                            <th style={{ textAlign: "left", padding: "0.55rem", borderBottom: "1px solid rgba(51, 65, 85, 0.6)" }}>BM25</th>
-                            <th style={{ textAlign: "left", padding: "0.55rem", borderBottom: "1px solid rgba(51, 65, 85, 0.6)" }}>Dense</th>
-                            <th style={{ textAlign: "left", padding: "0.55rem", borderBottom: "1px solid rgba(51, 65, 85, 0.6)" }}>RRF</th>
-                            <th style={{ textAlign: "left", padding: "0.55rem", borderBottom: "1px solid rgba(51, 65, 85, 0.6)" }}>Rerank</th>
+                          <tr style={{ background: "rgba(15, 23, 42, 0.6)", color: "#64748b" }}>
+                            <th style={{ textAlign: "left", padding: "0.75rem 1rem", borderBottom: "1px solid rgba(51, 65, 85, 0.2)" }}>Chunk</th>
+                            <th style={{ textAlign: "left", padding: "0.75rem 1rem", borderBottom: "1px solid rgba(51, 65, 85, 0.2)" }}>BM25</th>
+                            <th style={{ textAlign: "left", padding: "0.75rem 1rem", borderBottom: "1px solid rgba(51, 65, 85, 0.2)" }}>Dense</th>
+                            <th style={{ textAlign: "left", padding: "0.75rem 1rem", borderBottom: "1px solid rgba(51, 65, 85, 0.2)" }}>RRF</th>
+                            <th style={{ textAlign: "left", padding: "0.75rem 1rem", borderBottom: "1px solid rgba(51, 65, 85, 0.2)" }}>Rerank</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -958,29 +985,35 @@ export default function AdminDebugPanel() {
                             const deltaRrf = movementDelta(row.denseRank, row.rrfRank);
                             const deltaRerank = movementDelta(row.rrfRank, row.rerankRank);
                             return (
-                              <tr key={row.chunkId} style={{ borderBottom: "1px solid rgba(30, 41, 59, 0.75)" }}>
-                                <td style={{ padding: "0.55rem", color: "#cbd5e1", maxWidth: 310 }}>
+                              <tr key={row.chunkId} style={{ borderBottom: "1px solid rgba(30, 41, 59, 0.2)" }}>
+                                <td style={{ padding: "1rem", color: "#cbd5e1", maxWidth: 310 }}>
                                   <div style={{ fontWeight: 600, color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.source}</div>
-                                  <div style={{ marginTop: "0.2rem", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.snippet || "-"}</div>
+                                  <div style={{ marginTop: "0.3rem", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.75rem" }}>{row.snippet || "-"}</div>
                                 </td>
-                                <td style={{ padding: "0.55rem", color: "#cbd5e1" }}>{row.bm25Rank ?? "-"}</td>
-                                <td style={{ padding: "0.55rem", color: "#cbd5e1" }}>
-                                  <div>{row.denseRank ?? "-"}</div>
-                                  <span style={{ display: "inline-block", marginTop: "0.2rem", borderRadius: 999, padding: "0.05rem 0.42rem", fontSize: "0.68rem", ...movementStyle(deltaDense) }}>
-                                    {formatDelta(deltaDense)}
-                                  </span>
+                                <td style={{ padding: "1rem", color: "#cbd5e1" }}>{row.bm25Rank ?? "-"}</td>
+                                <td style={{ padding: "1rem", color: "#cbd5e1" }}>
+                                  <div style={{ fontWeight: 500 }}>{row.denseRank ?? "-"}</div>
+                                  {deltaDense !== undefined && (
+                                    <span style={{ display: "inline-block", marginTop: "0.3rem", borderRadius: 999, padding: "0.1rem 0.5rem", fontSize: "0.7rem", ...movementStyle(deltaDense) }}>
+                                      {formatDelta(deltaDense)}
+                                    </span>
+                                  )}
                                 </td>
-                                <td style={{ padding: "0.55rem", color: "#cbd5e1" }}>
-                                  <div>{row.rrfRank ?? "-"}</div>
-                                  <span style={{ display: "inline-block", marginTop: "0.2rem", borderRadius: 999, padding: "0.05rem 0.42rem", fontSize: "0.68rem", ...movementStyle(deltaRrf) }}>
-                                    {formatDelta(deltaRrf)}
-                                  </span>
+                                <td style={{ padding: "1rem", color: "#cbd5e1" }}>
+                                  <div style={{ fontWeight: 500 }}>{row.rrfRank ?? "-"}</div>
+                                  {deltaRrf !== undefined && (
+                                    <span style={{ display: "inline-block", marginTop: "0.3rem", borderRadius: 999, padding: "0.1rem 0.5rem", fontSize: "0.7rem", ...movementStyle(deltaRrf) }}>
+                                      {formatDelta(deltaRrf)}
+                                    </span>
+                                  )}
                                 </td>
-                                <td style={{ padding: "0.55rem", color: "#cbd5e1" }}>
-                                  <div>{row.rerankRank ?? "-"}</div>
-                                  <span style={{ display: "inline-block", marginTop: "0.2rem", borderRadius: 999, padding: "0.05rem 0.42rem", fontSize: "0.68rem", ...movementStyle(deltaRerank) }}>
-                                    {formatDelta(deltaRerank)}
-                                  </span>
+                                <td style={{ padding: "1rem", color: "#cbd5e1" }}>
+                                  <div style={{ fontWeight: 500 }}>{row.rerankRank ?? "-"}</div>
+                                  {deltaRerank !== undefined && (
+                                    <span style={{ display: "inline-block", marginTop: "0.3rem", borderRadius: 999, padding: "0.1rem 0.5rem", fontSize: "0.7rem", ...movementStyle(deltaRerank) }}>
+                                      {formatDelta(deltaRerank)}
+                                    </span>
+                                  )}
                                 </td>
                               </tr>
                             );

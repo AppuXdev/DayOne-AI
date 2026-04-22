@@ -40,6 +40,21 @@ type ManagedUser = {
   role: "admin" | "employee" | string;
 };
 
+type OrgStats = {
+  id: string;
+  name: string;
+  user_count: number;
+  document_count: number;
+};
+
+type QueryTraceRecord = {
+  id: string;
+  tenant_id: string;
+  query: string;
+  trace: any;
+  created_at: string;
+};
+
 type AdminDashboardProps = {
   apiBaseUrl?: string;
 };
@@ -64,6 +79,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function timeAgo(dateString: string): string {
+  const now = new Date();
+  const past = new Date(dateString);
+  const diff = now.getTime() - past.getTime();
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) return `${days}d ago`;
+  if (hours > 0) return `${hours}h ago`;
+  if (minutes > 0) return `${minutes}m ago`;
+  return 'just now';
+}
+
 export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -82,6 +112,10 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
   const [driftReport, setDriftReport] = useState<DriftReport | null>(null);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [orgStats, setOrgStats] = useState<OrgStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [recentTraces, setRecentTraces] = useState<QueryTraceRecord[]>([]);
+  const [tracesLoading, setTracesLoading] = useState(false);
   const [userStatus, setUserStatus] = useState<string | null>(null);
   const [userStatusKind, setUserStatusKind] = useState<StatusKind>(null);
   const [newUsername, setNewUsername] = useState("");
@@ -94,6 +128,24 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
   const [editEmail, setEditEmail] = useState("");
   const [editRole, setEditRole] = useState("employee");
   const [editPassword, setEditPassword] = useState("");
+  const [minimalMode, setMinimalMode] = useState(false);
+
+  useEffect(() => {
+    const isMinimal = localStorage.getItem("dayone_minimal_mode") === "true";
+    setMinimalMode(isMinimal);
+    if (isMinimal) document.body.classList.add("minimal-mode");
+  }, []);
+
+  const toggleMinimalMode = () => {
+    const newVal = !minimalMode;
+    setMinimalMode(newVal);
+    localStorage.setItem("dayone_minimal_mode", String(newVal));
+    if (newVal) {
+      document.body.classList.add("minimal-mode");
+    } else {
+      document.body.classList.remove("minimal-mode");
+    }
+  };
 
   useEffect(() => {
     const storedToken = localStorage.getItem("dayone_token");
@@ -115,7 +167,39 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
   useEffect(() => {
     if (!token) return;
     void loadUsers();
+    void loadStats();
+    void loadTraces();
   }, [token]);
+
+  async function loadStats() {
+    setStatsLoading(true);
+    try {
+      const data = await apiRequest<OrgStats>({
+        url: `${apiRoot}/api/org/me`,
+        method: "GET",
+      });
+      setOrgStats(data);
+    } catch (error) {
+      console.error("Failed to load org stats", error);
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
+  async function loadTraces() {
+    setTracesLoading(true);
+    try {
+      const data = await apiRequest<QueryTraceRecord[]>({
+        url: `${apiRoot}/api/admin/traces?limit=5`,
+        method: "GET",
+      });
+      setRecentTraces(data);
+    } catch (error) {
+      console.error("Failed to load traces", error);
+    } finally {
+      setTracesLoading(false);
+    }
+  }
 
   useEffect(() => {
     const activeUser = users.find((user) => user.username === selectedUser);
@@ -326,6 +410,23 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
           100% { background-position: 0% 50%; }
         }
 
+        .monogram {
+          width: 56px;
+          height: 56px;
+          border-radius: 16px;
+          background: rgba(56, 189, 248, 0.1);
+          border: 1px solid rgba(56, 189, 248, 0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0 auto 1.25rem;
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: #38bdf8;
+          letter-spacing: -0.04em;
+          box-shadow: 0 0 20px rgba(56, 189, 248, 0.15);
+        }
+
         .admin-sidebar {
           width: 300px;
           flex-shrink: 0;
@@ -401,6 +502,124 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
           color: #e2e8f0;
         }
 
+        .nav-item {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 0.75rem 1rem;
+          border-radius: 12px;
+          color: #94a3b8;
+          text-decoration: none;
+          font-size: 0.875rem;
+          font-weight: 500;
+          transition: all 0.2s;
+          margin-bottom: 0.25rem;
+          border: 1px solid transparent;
+        }
+
+        .nav-item:hover {
+          background: rgba(56, 189, 248, 0.05);
+          color: #f1f5f9;
+        }
+
+        .nav-item-active {
+          background: rgba(56, 189, 248, 0.1);
+          color: #38bdf8;
+          border-color: rgba(56, 189, 248, 0.2);
+        }
+
+        .stat-card {
+          border-radius: 20px;
+          border: 1px solid rgba(51, 65, 85, 0.5);
+          background: rgba(15, 23, 42, 0.6);
+          padding: 1.5rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          cursor: default;
+        }
+
+        .stat-card:hover {
+          transform: translateY(-4px);
+          background: rgba(15, 23, 42, 0.8);
+          border-color: rgba(56, 189, 248, 0.3);
+          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .stat-value {
+          font-size: 2rem;
+          font-weight: 700;
+          color: #f8fafc;
+          letter-spacing: -0.02em;
+        }
+
+        .stat-label {
+          font-size: 0.75rem;
+          font-weight: 600;
+          color: #64748b;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+        }
+
+        .activity-card {
+          border-radius: 20px;
+          border: 1px solid rgba(51, 65, 85, 0.5);
+          background: rgba(15, 23, 42, 0.7);
+          padding: 1.5rem;
+          height: 100%;
+          box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+          backdrop-filter: blur(10px);
+        }
+
+        .activity-item {
+          display: flex;
+          gap: 1rem;
+          padding: 1.25rem 0;
+          border-bottom: 1px solid rgba(51, 65, 85, 0.2);
+          transition: all 0.2s ease;
+        }
+
+        .activity-item:hover {
+          padding-left: 0.5rem;
+          background: rgba(56, 189, 248, 0.03);
+        }
+
+        .activity-item:last-child {
+          border-bottom: none;
+        }
+
+        .activity-icon {
+          width: 36px;
+          height: 36px;
+          border-radius: 12px;
+          background: rgba(56, 189, 248, 0.1);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #38bdf8;
+          font-size: 1rem;
+          flex-shrink: 0;
+          border: 1px solid rgba(56, 189, 248, 0.2);
+        }
+
+        .activity-query {
+          font-size: 0.875rem;
+          color: #f1f5f9;
+          font-weight: 500;
+          margin-bottom: 0.25rem;
+          display: -webkit-box;
+          -webkit-line-clamp: 1;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+
+        .activity-meta {
+          font-size: 0.75rem;
+          color: #64748b;
+        }
+
         .debug-btn {
           width: 100%;
           border-radius: 14px;
@@ -432,11 +651,11 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
           max-width: 760px;
           margin: 0 auto;
           border-radius: 24px;
-          border: 1px solid rgba(51, 65, 85, 0.5);
-          background: rgba(15, 23, 42, 0.7);
+          border: 1px solid rgba(51, 65, 85, 0.6);
+          background: rgba(15, 23, 42, 0.8);
           padding: 2.5rem;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-          backdrop-filter: blur(10px);
+          box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5);
+          backdrop-filter: blur(12px);
         }
 
         .user-grid {
@@ -730,6 +949,12 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
       <main className="admin-root">
         {/* Sidebar */}
         <aside className="admin-sidebar">
+          {/* Brand Monogram */}
+          <div className="flex items-center gap-3 mb-8 px-2">
+            <div className="monogram" style={{ margin: 0, width: "42px", height: "42px", borderRadius: "12px", fontSize: "1rem" }}>D1</div>
+            <span style={{ fontWeight: 700, fontSize: "1.1rem", color: "#f8fafc", letterSpacing: "-0.02em" }}>DayOne AI</span>
+          </div>
+
           {/* User identity card */}
           <div className="user-card">
             <div className="user-avatar" aria-hidden="true">{avatarInitial}</div>
@@ -741,18 +966,17 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
             </div>
           </div>
 
-          {/* Brand card */}
-          <div className="admin-brand-card">
-            <p style={{ margin: 0, fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "0.2em", color: "#475569", fontWeight: 600 }}>
-              Administration
-            </p>
-            <h1 style={{ margin: "0.4rem 0 0.35rem", fontSize: "1.35rem", fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.03em" }}>
-              DayOne AI
-            </h1>
-            <p style={{ margin: 0, fontSize: "0.8rem", color: "#64748b", lineHeight: 1.5 }}>
-              Tenant management and policy ingestion.
-            </p>
-          </div>
+          <nav style={{ flex: 1, marginTop: "1rem" }}>
+            <div className="nav-item nav-item-active">
+              <span>📊</span> Dashboard
+            </div>
+            <div className="nav-item" onClick={() => router.push("/chat")} style={{ cursor: "pointer" }}>
+              <span>💬</span> Chat
+            </div>
+            <div className="nav-item" onClick={() => router.push("/admin/debug")} style={{ cursor: "pointer" }}>
+              <span>🔍</span> Debug Panel
+            </div>
+          </nav>
 
           {/* Org badge */}
           <div className="org-badge">
@@ -764,14 +988,18 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
             </p>
           </div>
 
-          {/* Sign out */}
-          <button
-            onClick={() => router.push("/admin/debug")}
-            className="debug-btn"
-            aria-label="Open retrieval trace debug panel"
-          >
-            Open Debug Panel
-          </button>
+          {/* Minimal Mode Toggle */}
+          <div style={{ padding: "1rem 0.5rem 0.5rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer", color: "#64748b", fontSize: "0.8rem" }}>
+              <input 
+                type="checkbox" 
+                checked={minimalMode} 
+                onChange={toggleMinimalMode} 
+                style={{ width: "16px", height: "16px" }}
+              />
+              Minimal Mode
+            </label>
+          </div>
 
           <button
             onClick={signOut}
@@ -784,148 +1012,206 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
 
         {/* Main content */}
         <section className="admin-content">
-          <div className="upload-card">
-            <div>
-              <p style={{ margin: 0, fontSize: "0.75rem", color: "#38bdf8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Admin Portal
+          <div style={{ maxWidth: "1000px", margin: "0 auto" }}>
+            <header style={{ marginBottom: "2.5rem" }}>
+              <h1 style={{ fontSize: "2.25rem", fontWeight: 700, color: "#f8fafc", marginBottom: "0.5rem", letterSpacing: "-0.04em" }}>
+                Organization Overview
+              </h1>
+              <p style={{ color: "#94a3b8", fontSize: "1rem" }}>
+                Welcome to your <span style={{ color: "#38bdf8", fontWeight: 500 }}>{organization}</span> dashboard.
               </p>
-              <h2 style={{ margin: "0.4rem 0 0.5rem", fontSize: "2rem", fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.04em" }}>
-                Upload HR documents
-              </h2>
-              <p style={{ margin: 0, fontSize: "0.875rem", color: "#64748b", lineHeight: 1.6 }}>
-                Drag and drop PDFs or CSVs to refresh tenant pgvector embeddings for{" "}
-                <span style={{ color: "#38bdf8" }}>{organization}</span>.
-              </p>
+            </header>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1.5rem", marginBottom: "1.5rem" }}>
+              <div className="stat-card">
+                <span className="stat-label">Total Users</span>
+                <span className="stat-value">{statsLoading ? "..." : orgStats?.user_count ?? 0}</span>
+                <p style={{ margin: 0, fontSize: "0.75rem", color: "#475569" }}>Active organization members</p>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">Documents</span>
+                <span className="stat-value">{statsLoading ? "..." : orgStats?.document_count ?? 0}</span>
+                <p style={{ margin: 0, fontSize: "0.75rem", color: "#475569" }}>Processed HR files</p>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">System Status</span>
+                <span className="stat-value" style={{ color: "#86efac", fontSize: "1.5rem" }}>Operational</span>
+                <p style={{ margin: 0, fontSize: "0.75rem", color: "#475569" }}>All services healthy</p>
+              </div>
             </div>
 
-            {/* Drop zone */}
-            <div
-              id="admin-dropzone"
-              onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
-              onDragLeave={() => setDragActive(false)}
-              onDrop={onDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className={`dropzone${dragActive ? " dropzone-active" : ""}`}
-              role="button"
-              aria-label="Click or drag files to upload"
-              tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click(); }}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept=".pdf,.csv"
-                onChange={(e) => addFiles(e.target.files)}
-                style={{ display: "none" }}
-                aria-hidden="true"
-              />
-              <span className="dropzone-icon">📂</span>
-              <p style={{ margin: 0, fontSize: "1.05rem", fontWeight: 600, color: "#e2e8f0" }}>
-                Drop files here
-              </p>
-              <p style={{ margin: "0.35rem 0 0", fontSize: "0.825rem", color: "#475569" }}>
-                or click to browse · <span style={{ color: "#64748b" }}>PDF and CSV supported</span>
-              </p>
-            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: "1.5rem", marginBottom: "3rem", alignItems: "start" }}>
+              <div className="upload-card" style={{ maxWidth: "none", margin: 0 }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: "0.75rem", color: "#38bdf8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                    Knowledge Base
+                  </p>
+                  <h2 style={{ margin: "0.4rem 0 0.5rem", fontSize: "2rem", fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.04em" }}>
+                    Upload HR documents
+                  </h2>
+                  <p style={{ margin: 0, fontSize: "0.875rem", color: "#64748b", lineHeight: 1.6 }}>
+                    Drag and drop PDFs or CSVs to refresh tenant pgvector embeddings.
+                  </p>
+                </div>
 
-            {/* File list */}
-            {files.length > 0 ? (
-              <div className="file-list">
-                <p style={{ margin: "0 0 0.75rem", fontSize: "0.8rem", fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                  {files.length} file{files.length > 1 ? "s" : ""} selected
-                </p>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                  {files.map((file, index) => (
-                    <div key={`${file.name}-${file.lastModified}`} className="file-item">
-                      <span className={file.name.toLowerCase().endsWith(".pdf") ? "file-badge-pdf" : "file-badge-csv"}>
-                        {file.name.toLowerCase().endsWith(".pdf") ? "PDF" : "CSV"}
-                      </span>
-                      <span style={{ flex: 1, fontSize: "0.85rem", color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {file.name}
-                      </span>
-                      <span style={{ fontSize: "0.75rem", color: "#475569", flexShrink: 0 }}>
-                        {formatBytes(file.size)}
-                      </span>
-                      <button
-                        onClick={() => removeFile(index)}
-                        className="file-remove-btn"
-                        aria-label={`Remove ${file.name}`}
-                        title="Remove file"
-                      >
-                        ×
-                      </button>
+                {/* Drop zone */}
+                <div
+                  id="admin-dropzone"
+                  onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                  onDragLeave={() => setDragActive(false)}
+                  onDrop={onDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`dropzone${dragActive ? " dropzone-active" : ""}`}
+                  role="button"
+                  aria-label="Click or drag files to upload"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click(); }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".pdf,.csv"
+                    onChange={(e) => addFiles(e.target.files)}
+                    style={{ display: "none" }}
+                    aria-hidden="true"
+                  />
+                  <span className="dropzone-icon">📂</span>
+                  <p style={{ margin: 0, fontSize: "1.05rem", fontWeight: 600, color: "#e2e8f0" }}>
+                    Drop files here
+                  </p>
+                  <p style={{ margin: "0.35rem 0 0", fontSize: "0.825rem", color: "#475569" }}>
+                    or click to browse · <span style={{ color: "#64748b" }}>PDF and CSV supported</span>
+                  </p>
+                </div>
+
+                {/* File list */}
+                {files.length > 0 ? (
+                  <div className="file-list">
+                    <p style={{ margin: "0 0 0.75rem", fontSize: "0.8rem", fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                      {files.length} file{files.length > 1 ? "s" : ""} selected
+                    </p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                      {files.map((file, index) => (
+                        <div key={`${file.name}-${file.lastModified}`} className="file-item">
+                          <span className={file.name.toLowerCase().endsWith(".pdf") ? "file-badge-pdf" : "file-badge-csv"}>
+                            {file.name.toLowerCase().endsWith(".pdf") ? "PDF" : "CSV"}
+                          </span>
+                          <span style={{ flex: 1, fontSize: "0.85rem", color: "#cbd5e1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {file.name}
+                          </span>
+                          <span style={{ fontSize: "0.75rem", color: "#475569", flexShrink: 0 }}>
+                            {formatBytes(file.size)}
+                          </span>
+                          <button
+                            onClick={() => removeFile(index)}
+                            className="file-remove-btn"
+                            aria-label={`Remove ${file.name}`}
+                            title="Remove file"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* Status message */}
-            {status ? (
-              <div
-                className={statusKind === "error" ? "status-error" : "status-success"}
-                role="alert"
-              >
-                {statusKind === "success" ? "✅ " : "⚠️ "}
-                {status}
-              </div>
-            ) : null}
-
-            {/* Drift report panel */}
-            {driftReport && (
-              <div style={{ marginTop: "1.5rem", borderRadius: "16px", border: "1px solid rgba(56,189,248,0.2)", background: "rgba(56,189,248,0.04)", padding: "1.25rem" }}>
-                <p style={{ margin: "0 0 0.5rem", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.15em", color: "#38bdf8", fontWeight: 700 }}>Policy Change Summary</p>
-                <p style={{ margin: "0 0 0.75rem", fontSize: "0.9rem", color: "#e2e8f0", fontWeight: 500 }}>{driftReport.summary}</p>
-                <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-                  {driftReport.changed_chunks > 0 && (
-                    <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(234,179,8,0.12)", color: "#fde68a", border: "1px solid rgba(234,179,8,0.2)" }}>
-                      ✏️ {driftReport.changed_chunks} changed
-                    </span>
-                  )}
-                  {driftReport.new_chunks > 0 && (
-                    <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(34,197,94,0.12)", color: "#86efac", border: "1px solid rgba(34,197,94,0.2)" }}>
-                      ➕ {driftReport.new_chunks} added
-                    </span>
-                  )}
-                  {driftReport.removed_chunks > 0 && (
-                    <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(244,63,94,0.12)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.2)" }}>
-                      🗑️ {driftReport.removed_chunks} removed
-                    </span>
-                  )}
-                  <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(51,65,85,0.4)", color: "#94a3b8", border: "1px solid rgba(51,65,85,0.4)" }}>
-                    ✓ {driftReport.unchanged_chunks} unchanged
-                  </span>
-                </div>
-                {driftReport.diffs.filter(d => d.status === "changed").slice(0, 3).map((diff, i) => (
-                  <div key={i} style={{ marginTop: "0.75rem", borderRadius: "10px", border: "1px solid rgba(51,65,85,0.4)", padding: "0.6rem 0.875rem", background: "rgba(2,6,23,0.3)" }}>
-                    <p style={{ margin: "0 0 0.3rem", fontSize: "0.7rem", color: "#475569", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em" }}>Changed section</p>
-                    <p style={{ margin: 0, fontSize: "0.78rem", color: "#94a3b8", lineHeight: 1.5 }}>{diff.new_snippet.slice(0, 160)}…</p>
                   </div>
-                ))}
-              </div>
-            )}
+                ) : null}
 
-            {/* Action buttons */}
-            <div style={{ marginTop: "1.5rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-              <button
-                id="admin-rebuild-btn"
-                onClick={uploadFiles}
-                disabled={uploading || files.length === 0}
-                aria-label="Upload files and rebuild the knowledge index"
-                className="upload-btn"
-              >
-                {uploading ? "Uploading…" : "Rebuild Index"}
-              </button>
-              <button
-                onClick={() => { setFiles([]); setStatus(null); setStatusKind(null); }}
-                aria-label="Clear all selected files"
-                className="clear-btn"
-              >
-                Clear selection
-              </button>
+                {/* Status message */}
+                {status ? (
+                  <div
+                    className={statusKind === "error" ? "status-error" : "status-success"}
+                    role="alert"
+                  >
+                    {statusKind === "success" ? "✅ " : "⚠️ "}
+                    {status}
+                  </div>
+                ) : null}
+
+                {/* Drift report panel */}
+                {driftReport && (
+                  <div style={{ marginTop: "1.5rem", borderRadius: "16px", border: "1px solid rgba(56,189,248,0.2)", background: "rgba(56,189,248,0.04)", padding: "1.25rem" }}>
+                    <p style={{ margin: "0 0 0.5rem", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.15em", color: "#38bdf8", fontWeight: 700 }}>Policy Change Summary</p>
+                    <p style={{ margin: "0 0 0.75rem", fontSize: "0.9rem", color: "#e2e8f0", fontWeight: 500 }}>{driftReport.summary}</p>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                      {driftReport.changed_chunks > 0 && (
+                        <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(234,179,8,0.12)", color: "#fde68a", border: "1px solid rgba(234,179,8,0.2)" }}>
+                          ✏️ {driftReport.changed_chunks} changed
+                        </span>
+                      )}
+                      {driftReport.new_chunks > 0 && (
+                        <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(34,197,94,0.12)", color: "#86efac", border: "1px solid rgba(34,197,94,0.2)" }}>
+                          ➕ {driftReport.new_chunks} added
+                        </span>
+                      )}
+                      {driftReport.removed_chunks > 0 && (
+                        <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(244,63,94,0.12)", color: "#fda4af", border: "1px solid rgba(244,63,94,0.2)" }}>
+                          🗑️ {driftReport.removed_chunks} removed
+                        </span>
+                      )}
+                      <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "20px", background: "rgba(51,65,85,0.4)", color: "#94a3b8", border: "1px solid rgba(51,65,85,0.4)" }}>
+                        ✓ {driftReport.unchanged_chunks} unchanged
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div style={{ marginTop: "1.5rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <button
+                    id="admin-rebuild-btn"
+                    onClick={uploadFiles}
+                    disabled={uploading || files.length === 0}
+                    aria-label="Upload files and rebuild the knowledge index"
+                    className="upload-btn"
+                  >
+                    {uploading ? "Uploading…" : "Rebuild Index"}
+                  </button>
+                  <button
+                    onClick={() => { setFiles([]); setStatus(null); setStatusKind(null); }}
+                    aria-label="Clear all selected files"
+                    className="clear-btn"
+                  >
+                    Clear selection
+                  </button>
+                </div>
+              </div>
+
+              <div className="activity-card">
+                <h3 className="stat-label" style={{ marginBottom: "1.25rem", display: "block" }}>Recent Queries</h3>
+                {tracesLoading ? (
+                  <p style={{ color: "#64748b", fontSize: "0.875rem" }}>Loading activity...</p>
+                ) : recentTraces.length === 0 ? (
+                  <p style={{ color: "#64748b", fontSize: "0.875rem" }}>No recent activity.</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    {recentTraces.map((trace) => (
+                      <div key={trace.id} className="activity-item">
+                        <div className="activity-icon">
+                          {trace.trace?.abstained ? "🚫" : "💬"}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <p className="activity-query">{trace.query}</p>
+                          <div className="activity-meta">
+                            <span>{timeAgo(trace.created_at)}</span>
+                            <span style={{ margin: "0 0.5rem" }}>·</span>
+                            <span style={{ color: trace.trace?.confidence >= 0.7 ? "#86efac" : trace.trace?.confidence >= 0.4 ? "#fde68a" : "#fda4af" }}>
+                              {(trace.trace?.confidence * 100 || 0).toFixed(0)}% match
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button 
+                  onClick={() => router.push("/admin/debug")}
+                  style={{ width: "100%", marginTop: "1.5rem", padding: "0.75rem", borderRadius: "12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", fontSize: "0.825rem", cursor: "pointer" }}
+                >
+                  View all traces
+                </button>
+              </div>
             </div>
-          </div>
 
           <div className="upload-card" style={{ marginTop: "1.5rem" }}>
             <div>
@@ -1090,8 +1376,9 @@ export default function AdminDashboard({ apiBaseUrl }: AdminDashboardProps) {
               </div>
             </div>
           </div>
-        </section>
-      </main>
-    </>
-  );
+        </div>
+      </section>
+    </main>
+  </>
+);
 }
