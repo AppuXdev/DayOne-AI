@@ -3,7 +3,22 @@ credentials:
     john_doe:
       email: john@acmecorp.com
       name: John Doe
-      password: $2b$12$.OMWn88MOWm2/ApFrVegae0JFcD9lXmDZzGbX01kjt95hN3wNoOj
+      password: john123   # 👈 change THIS
+      organization: org_acme
+      role: employee
+
+cookie:
+  expiry_days: 30
+  key: some_secret_key
+  name: login_cookie
+
+preauthorized:
+  emails: []credentials:
+  usernames:
+    john_doe:
+      email: john@acmecorp.com
+      name: John Doe
+      password: john123   # 👈 change THIS
       organization: org_acme
       role: employee
 
