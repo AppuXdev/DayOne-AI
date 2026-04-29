@@ -65,6 +65,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
   const [sending, setSending] = useState(false);
   const [minimalMode, setMinimalMode] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const rehydratedRef = useRef(false);
 
   useEffect(() => {
     const isMinimal = localStorage.getItem("dayone_minimal_mode") === "true";
@@ -85,6 +86,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
 
   // Auth guard + rehydrate conversation from localStorage
   useEffect(() => {
+    if (rehydratedRef.current) return;
     const stored = localStorage.getItem("dayone_token");
     if (!stored) { router.replace("/login"); return; }
     const decoded = decodeJwt(stored);
@@ -97,6 +99,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) setMessages(JSON.parse(saved) as ChatMessage[]);
     } catch { /* ignore */ }
+    rehydratedRef.current = true;
   }, [router]);
 
   // Persist messages to localStorage on change
@@ -109,33 +112,43 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
+  const appendMessages = (...nextMessages: ChatMessage[]) => {
+    setMessages(prev => [...prev, ...nextMessages]);
+  };
+
+  const replaceLastMessage = (updater: (current: ChatMessage) => ChatMessage) => {
+    setMessages(prev => {
+      if (prev.length === 0) return prev;
+      const next = [...prev];
+      next[next.length - 1] = updater(next[next.length - 1]);
+      return next;
+    });
+  };
+
   async function sendPrompt(text: string) {
     const trimmed = text.trim();
     if (!trimmed || !token || sending) return;
 
     const userMsg: ChatMessage = { role: "user", content: trimmed };
     // Append user message + streaming placeholder
-    const assistantIdx = messages.length + 1;
-    setMessages(prev => [
-      ...prev,
-      userMsg,
-      { role: "assistant", content: "", streaming: true },
-    ]);
+    appendMessages(userMsg, { role: "assistant", content: "", streaming: true });
     setPrompt("");
     setSending(true);
 
     try {
-      const res = await fetch(`${apiRoot}/api/chat/stream`, {
+      const response = await fetch(`${apiRoot}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
         body: JSON.stringify({ prompt: trimmed }),
       });
 
-      if (!res.ok || !res.body) {
-        throw new Error(`HTTP ${res.status}`);
+      console.log(response);
+
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
       }
 
-      const reader = res.body.getReader();
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
       let meta: Partial<ChatMessage> = {};
@@ -179,15 +192,11 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
             const randomFactor = accumulated.length > 300 ? 10 : 20;
             await new Promise(r => setTimeout(r, baseDelay + Math.random() * randomFactor));
 
-            setMessages(prev => {
-              const next = [...prev];
-              next[next.length - 1] = { 
-                ...next[next.length - 1], 
-                content: accumulated, 
-                ...meta 
-              };
-              return next;
-            });
+            replaceLastMessage(current => ({
+              ...current,
+              content: accumulated,
+              ...meta,
+            }));
             return;
           }
 
@@ -246,27 +255,21 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         throw new Error(streamError);
       }
 
-      setMessages(prev => {
-        const next = [...prev];
-        next[next.length - 1] = {
-          ...next[next.length - 1], streaming: false, ...meta,
-          content: accumulated || "I do not have that information in the current HR files. Please contact HR.",
-        };
-        return next;
-      });
+      replaceLastMessage(current => ({
+        ...current,
+        streaming: false,
+        ...meta,
+        content: accumulated || "I do not have that information in the current HR files. Please contact HR.",
+      }));
 
     } catch (err) {
-      setMessages(prev => {
-        const next = [...prev];
-        next[next.length - 1] = {
-          role: "assistant",
-          content: err instanceof Error ? err.message : "Request failed.",
-          streaming: false,
-          error: true,
-          retryPrompt: trimmed,
-        };
-        return next;
-      });
+      replaceLastMessage(() => ({
+        role: "assistant",
+        content: err instanceof Error ? err.message : "Request failed.",
+        streaming: false,
+        error: true,
+        retryPrompt: trimmed,
+      }));
     } finally {
       setSending(false);
     }

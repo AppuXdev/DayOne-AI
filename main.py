@@ -245,7 +245,7 @@ class ChatResponse(BaseModel):
     organization: str
     role: str
     model: str
-    confidence: float = 0.0
+    confidence: float
     confidence_label: str = "low"
     conflict_detected: bool = False
     latency_ms: float = 0.0
@@ -307,7 +307,7 @@ class FeedbackRequest(BaseModel):
     query_id: str = Field(min_length=1)
     rating: str = Field(pattern=r"^(up|down)$")
     sources: List[str] = Field(default_factory=list)
-    confidence: float = 0.0
+    confidence: float
     query: str = ""
 
 
@@ -702,9 +702,9 @@ def process_chat_query(payload: ChatRequest, claims: TokenPayload) -> ProcessedQ
         tenant_id,
         source_weights=source_weights,
     )
-    result: RetrievalResult = retriever.retrieve(rewritten, candidate_k=route_config.candidate_k)
-    docs = result.final_docs
-    confidence = result.confidence
+    retrieval_result: RetrievalResult = retriever.retrieve(rewritten, candidate_k=route_config.candidate_k)
+    docs = retrieval_result.final_docs
+    confidence = retrieval_result.confidence
 
     if not docs:
         total_ms = (time.perf_counter() - t0) * 1000
@@ -721,7 +721,7 @@ def process_chat_query(payload: ChatRequest, claims: TokenPayload) -> ProcessedQ
             query=query,
             rewritten_query=rewritten,
             answer=no_results_answer,
-            confidence=0.0,
+            confidence=confidence,
             sources=[],
             latency_ms=total_ms,
             conflict_detected=False,
@@ -736,10 +736,10 @@ def process_chat_query(payload: ChatRequest, claims: TokenPayload) -> ProcessedQ
             query=query,
             query_type=query_type,
             route_name=route_name,
-            result=result,
+            result=retrieval_result,
             sources=[],
             verification_result=verification_result,
-            confidence=0.0,
+            confidence=confidence,
             abstained=True,
             abstain_reason="no_retrieval_results",
             total_ms=total_ms,
@@ -751,8 +751,8 @@ def process_chat_query(payload: ChatRequest, claims: TokenPayload) -> ProcessedQ
             organization=organization,
             role=role,
             model=MODEL_NAME,
-            confidence=0.0,
-            confidence_label="low",
+            confidence=confidence,
+            confidence_label=confidence_label(confidence),
             verification={
                 "is_grounded": False,
                 "verification_confidence": 0.0,
@@ -1092,9 +1092,9 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         tenant_id,
         source_weights=source_weights,
     )
-    result: RetrievalResult = retriever.retrieve(rewritten, candidate_k=route_config.candidate_k)
-    docs = result.final_docs
-    confidence = result.confidence
+    retrieval_result: RetrievalResult = retriever.retrieve(rewritten, candidate_k=route_config.candidate_k)
+    docs = retrieval_result.final_docs
+    confidence = retrieval_result.confidence
     total_ms = (time.perf_counter() - t0) * 1000
 
     query_type = classification.type if classification is not None else "factual"
@@ -1110,8 +1110,8 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         return ChatResponse(
             answer="I do not have that information in the current HR files. Please contact HR.",
             sources=[], username=username, organization=organization,
-            role=role, model=MODEL_NAME, confidence=0.0,
-            confidence_label="low", verification=verification,
+            role=role, model=MODEL_NAME, confidence=confidence,
+            confidence_label=confidence_label(confidence), verification=verification,
             abstained=True, abstain_reason="no_retrieval_results",
             route=route_name, query_type=query_type, status="no_results",
         )
@@ -1183,13 +1183,13 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     total_ms = (time.perf_counter() - t0) * 1000
 
     # Build justification records for the API response
-    rank_changes = result.rank_changes
+    rank_changes = retrieval_result.rank_changes
     justification = [] if abstained else [
         {
             "rank": i + 1,
             "source": Path(str(docs[i].metadata.get("source", "unknown"))).name,
             "snippet": docs[i].page_content[:400].strip(),
-            "score": round(result.final_scores[i], 4) if i < len(result.final_scores) else 0.0,
+            "score": round(retrieval_result.final_scores[i], 4) if i < len(retrieval_result.final_scores) else 0.0,
             "rank_change": rank_changes[i] if i < len(rank_changes) else 0,
         }
         for i in range(len(docs))
@@ -1215,7 +1215,7 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         tenant_id=resolved_tenant_id,
         query_type=query_type,
         route=route_name,
-        result=result,
+        result=retrieval_result,
         final_sources=sources,
         verification_result=verification_result,
         confidence=confidence,
