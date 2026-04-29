@@ -32,6 +32,8 @@ type ChatMessage = {
 
 type ChatInterfaceProps = { apiBaseUrl?: string };
 
+const CONFIDENCE_VERIFIED_THRESHOLD = 0.4;
+
 const SUGGESTIONS = [
   { icon: "🕐", text: "What are the core hours?" },
   { icon: "🌴", text: "How do I request PTO?" },
@@ -310,6 +312,16 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
   const usernameDisplay = profile?.username ?? "User";
   const avatarInitial = usernameDisplay[0]?.toUpperCase() ?? "U";
 
+  const getConfidenceLabel = (confidence?: number) => {
+    if (confidence === undefined) return null;
+    return confidence >= CONFIDENCE_VERIFIED_THRESHOLD ? "Verified" : "Moderate";
+  };
+
+  const getConfidenceTone = (confidence?: number) => {
+    if (confidence === undefined) return "moderate";
+    return confidence >= CONFIDENCE_VERIFIED_THRESHOLD ? "verified" : "moderate";
+  };
+
   return (
     <>
       <style>{`
@@ -354,16 +366,20 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         .assistant-bubble.error-bubble { border-color:rgba(244,63,94,0.4); background:rgba(244,63,94,0.08); }
         @keyframes cursor-blink { 0%,100%{opacity:1} 50%{opacity:0} }
         .streaming-cursor { display:inline-block; width:2px; height:1em; background:#38bdf8; margin-left:2px; vertical-align:text-bottom; animation:cursor-blink 0.8s ease infinite; }
-        .meta-bar { margin-top:0.8rem; display:flex; align-items:center; flex-wrap:wrap; gap:0.6rem; opacity: 0.8; transition: opacity 0.2s; }
-        .meta-bar:hover { opacity: 1; }
-        .conf-badge { font-size:0.72rem; font-weight:700; padding:0.35rem 0.85rem; border-radius:12px; text-transform:uppercase; letter-spacing:0.05em; transition: all 0.3s ease; }
-        .conf-high { background:rgba(34,197,94,0.12); color:#86efac; border:1px solid rgba(34,197,94,0.3); }
-        .conf-medium { background:rgba(234,179,8,0.12); color:#fde68a; border:1px solid rgba(234,179,8,0.3); }
-        .conf-low { background:rgba(244,63,94,0.12); color:#fda4af; border:1px solid rgba(244,63,94,0.3); }
+        .meta-bar { margin-top:0.8rem; display:flex; align-items:center; flex-wrap:wrap; gap:0.6rem; }
+        .conf-badge { font-size:0.72rem; font-weight:700; padding:0.35rem 0.85rem; border-radius:12px; letter-spacing:0.02em; transition: all 0.3s ease; }
+        .conf-verified { background:rgba(34,197,94,0.12); color:#86efac; border:1px solid rgba(34,197,94,0.3); }
+        .conf-moderate { background:rgba(234,179,8,0.12); color:#fde68a; border:1px solid rgba(234,179,8,0.3); }
         .abstain-bubble { border: 1px solid rgba(244, 63, 94, 0.4) !important; background: rgba(244, 63, 94, 0.08) !important; box-shadow: 0 4px 12px rgba(244, 63, 94, 0.1) !important; }
         .abstain-icon { font-size: 1.6rem; margin-bottom: 0.5rem; display: block; filter: drop-shadow(0 0 4px rgba(244, 63, 94, 0.2)); }
         .abstain-title { font-weight: 700; color: #fda4af; margin-bottom: 0.3rem; display: block; letter-spacing: -0.01em; }
-        .latency-badge { font-size:0.7rem; color:#64748b; font-weight: 500; }
+        .verification-details { margin-top:0.8rem; border-radius:12px; border:1px solid rgba(51,65,85,0.45); background:rgba(2,6,23,0.35); padding:0.6rem 0.85rem; }
+        .verification-summary { cursor:pointer; font-size:0.78rem; font-weight:600; color:#94a3b8; user-select:none; list-style:none; }
+        .verification-summary::-webkit-details-marker { display:none; }
+        .verification-body { margin-top:0.65rem; display:grid; gap:0.5rem; }
+        .verification-item { display:flex; align-items:flex-start; justify-content:space-between; gap:0.75rem; padding:0.5rem 0.65rem; border-radius:10px; background:rgba(15,23,42,0.55); border:1px solid rgba(51,65,85,0.35); }
+        .verification-label { font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; color:#64748b; font-weight:600; }
+        .verification-value { font-size:0.78rem; color:#e2e8f0; text-align:right; }
         .feedback-row { display:flex; align-items:center; gap:0.35rem; margin-top:0.5rem; }
         .thumb-btn { background:none; border:1px solid rgba(51,65,85,0.5); border-radius:8px; padding:0.25rem 0.55rem; font-size:0.85rem; cursor:pointer; transition:all 0.15s; color:#64748b; }
         .thumb-btn:hover:not(:disabled) { border-color:rgba(56,189,248,0.4); color:#38bdf8; background:rgba(56,189,248,0.05); }
@@ -373,9 +389,8 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
         .retry-btn { font-size:0.75rem; padding:0.3rem 0.7rem; border-radius:8px; border:1px solid rgba(56,189,248,0.4); background:rgba(56,189,248,0.07); color:#38bdf8; cursor:pointer; font-family:'Inter',sans-serif; transition:all 0.15s; }
         .retry-btn:hover { background:rgba(56,189,248,0.14); }
         .sources-details { margin-top:0.875rem; border-radius:12px; border:1px solid rgba(51,65,85,0.5); background:rgba(2,6,23,0.5); padding:0.75rem 1rem; }
-        .sources-summary { cursor:pointer; font-size:0.8rem; font-weight:600; color:#38bdf8; user-select:none; list-style:none; }
+        .sources-summary { font-size:0.8rem; font-weight:600; color:#38bdf8; user-select:none; margin-bottom:0.45rem; }
         .source-item { border-radius:10px; border:1px solid rgba(51,65,85,0.4); background:rgba(15,23,42,0.6); padding:0.5rem 0.75rem; font-size:0.8rem; margin-top:0.4rem; }
-        .conflict-warn { margin-top:0.6rem; border-radius:10px; border:1px solid rgba(234,179,8,0.25); background:rgba(234,179,8,0.07); padding:0.5rem 0.75rem; font-size:0.78rem; color:#fde68a; }
         @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
         .typing-dot { width:7px; height:7px; border-radius:50%; background:#38bdf8; animation:bounce 1.2s ease-in-out infinite; }
         .chat-input-wrap { position:sticky; bottom:0; border-top:1px solid rgba(51,65,85,0.4); background:rgba(2,6,23,0.95); backdrop-filter:blur(20px); padding:1.25rem 2rem; }
@@ -500,21 +515,50 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
                           </p>
                         )}
 
-                        {/* Meta bar — confidence + latency */}
+                        {/* Meta bar — confidence */}
                         {!msg.streaming && msg.confidence !== undefined && (
                           <div className="meta-bar">
-                            <span className={`conf-badge conf-${msg.confidence_label ?? "low"}`}>
-                              {msg.confidence_label} · {(msg.confidence * 100).toFixed(0)}%
+                            <span className={`conf-badge conf-${getConfidenceTone(msg.confidence)}`}>
+                              Confidence: {getConfidenceLabel(msg.confidence)}
                             </span>
-                            {msg.ttft_ms !== undefined && (
-                              <span className="latency-badge">TTFT {msg.ttft_ms.toFixed(0)} ms · {msg.latency_ms?.toFixed(0)} ms total</span>
-                            )}
                           </div>
                         )}
 
-                        {/* Conflict warning */}
-                        {msg.conflict_detected && (
-                          <div className="conflict-warn">⚠️ Context spans multiple documents — verify with HR before acting.</div>
+                        {/* Verification details */}
+                        {!msg.streaming && (
+                          <details className="verification-details">
+                            <summary className="verification-summary">More details</summary>
+                            <div className="verification-body">
+                              {msg.confidence !== undefined && (
+                                <div className="verification-item">
+                                  <span className="verification-label">Confidence score</span>
+                                  <span className="verification-value">{(msg.confidence * 100).toFixed(0)}%</span>
+                                </div>
+                              )}
+                              {msg.conflict_detected && (
+                                <div className="verification-item">
+                                  <span className="verification-label">Verification note</span>
+                                  <span className="verification-value">Additional verification recommended</span>
+                                </div>
+                              )}
+                              {msg.abstained && msg.abstain_reason && (
+                                <div className="verification-item">
+                                  <span className="verification-label">Justification</span>
+                                  <span className="verification-value">{msg.abstain_reason}</span>
+                                </div>
+                              )}
+                              {(msg.ttft_ms !== undefined || msg.latency_ms !== undefined) && (
+                                <div className="verification-item">
+                                  <span className="verification-label">Debug info</span>
+                                  <span className="verification-value">
+                                    {msg.ttft_ms !== undefined ? `TTFT ${msg.ttft_ms.toFixed(0)} ms` : null}
+                                    {msg.ttft_ms !== undefined && msg.latency_ms !== undefined ? " · " : null}
+                                    {msg.latency_ms !== undefined ? `${msg.latency_ms.toFixed(0)} ms total` : null}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </details>
                         )}
 
                         {/* Retry button on error */}
@@ -526,8 +570,8 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
 
                         {/* Sources */}
                         {!msg.streaming && msg.sources && msg.sources.length > 0 && (
-                          <details className="sources-details">
-                            <summary className="sources-summary">📎 Sources ({msg.sources.length})</summary>
+                          <div className="sources-details">
+                            <div className="sources-summary">📎 Sources ({msg.sources.length})</div>
                             {msg.sources.map((s, si) => (
                               <div key={si} className="source-item">
                                 <div style={{ fontWeight: 600, color: "#e2e8f0" }}>{s.source}</div>
@@ -536,7 +580,7 @@ export default function ChatInterface({ apiBaseUrl }: ChatInterfaceProps) {
                                 </div>
                               </div>
                             ))}
-                          </details>
+                          </div>
                         )}
 
                         {/* Feedback thumbs */}
