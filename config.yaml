@@ -3,14 +3,6 @@ credentials:
     john_doe:
       email: john@acmecorp.com
       name: John Doe
-      password: john123
+      password: 12345678
       organization: org_acme
       role: employee
-
-cookie:
-  expiry_days: 30
-  key: some_secret_key
-  name: login_cookie
-
-preauthorized:
-  emails: []
