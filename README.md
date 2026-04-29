@@ -1,3 +1,4 @@
+
 # DayOne AI
 
 <p align="center">
@@ -501,3 +502,5 @@ This is the difference between a RAG demo and a deployable multi-tenant AI syste
 ---
 
 If your system cannot explain *why* it answered, it should not answer at all.
+
+
