@@ -871,7 +871,7 @@ def main() -> None:
         cookie_key=config.get("cookie", {}).get("key", "change-this-key"),
         cookie_expiry_days=config.get("cookie", {}).get("expiry_days", 30),
         preauthorized=config.get("preauthorized"),
-        auto_hash=True,
+        auto_hash=False,
     )
 
     if st.session_state.get("authentication_status") is not True:
