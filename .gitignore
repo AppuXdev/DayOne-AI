@@ -64,4 +64,8 @@ data/**/.file_hashes.json
 # Sensitive files (auto-detected)
 .env
 node_modules
-
+venv/
+venv311/
+__pycache__/
+.env
+logs/
