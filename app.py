@@ -862,6 +862,7 @@ def main() -> None:
     require_groq_api_key()
 
     config = load_config()
+    st.write("DEBUG CONFIG:", config)
     credentials_root = config.get("credentials", {})
     users = credentials_root.get("usernames", {})
     authenticator = stauth.Authenticate(
