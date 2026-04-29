@@ -11,6 +11,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
+$envPath = Join-Path $projectRoot '.env'
+if (-not (Test-Path $envPath)) {
+    throw 'CRITICAL: .env file not found. Cannot start system.'
+}
+
 function Invoke-ExternalCommand {
     param(
         [Parameter(Mandatory = $true)]
@@ -83,6 +88,51 @@ function Invoke-IngestWithRetry {
     return $false
 }
 
+function Test-DatabaseConnection {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonExe
+    )
+
+    & $PythonExe -c "import os; from dotenv import load_dotenv; from sqlalchemy import create_engine, text; load_dotenv(); url=os.getenv('DATABASE_URL'); assert url, 'DATABASE_URL is required'; engine=create_engine(url, pool_pre_ping=True); conn=engine.connect(); conn.execute(text('SELECT 1')); conn.close(); print('DB OK')"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-DatabaseReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonExe,
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot
+    )
+
+    Write-Host 'Checking database connectivity...' -ForegroundColor Cyan
+    if (Test-DatabaseConnection -PythonExe $PythonExe) {
+        return
+    }
+
+    $composeFile = Join-Path $ProjectRoot 'infra\docker-compose.yml'
+    if (Test-Path $composeFile) {
+        $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
+        if ($dockerCmd) {
+            Write-Host 'Database is unavailable. Attempting to start local postgres via docker compose...' -ForegroundColor DarkYellow
+            & $dockerCmd.Source compose -f $composeFile up -d postgres
+            if ($LASTEXITCODE -ne 0) {
+                throw 'CRITICAL: Failed to start postgres container via docker compose.'
+            }
+
+            for ($i = 1; $i -le 10; $i++) {
+                if (Test-DatabaseConnection -PythonExe $PythonExe) {
+                    return
+                }
+                Start-Sleep -Seconds 2
+            }
+        }
+    }
+
+    throw 'CRITICAL: Database is not reachable. Ensure postgres is running and DATABASE_URL points to the correct host/port.'
+}
+
 function Start-BackgroundProcess {
     param(
         [Parameter(Mandatory = $true)]
@@ -150,6 +200,9 @@ if (-not (Test-Path $pythonExe)) {
 if (Test-Path Env:PYTHONHOME) { Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue }
 if (Test-Path Env:PYTHONPATH) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
 
+# Force the expected local Postgres endpoint for this shell session.
+$env:DATABASE_URL = "postgresql+psycopg://dayone:dayone@localhost:55432/dayone"
+
 if (-not $SkipInstall) {
     Write-Host 'Installing Python dependencies...' -ForegroundColor Cyan
     Invoke-ExternalCommand -Step 'pip upgrade' -Command { & $pythonExe -m pip install --upgrade pip }
@@ -167,9 +220,40 @@ if (-not $SkipInstall) {
     Invoke-ExternalCommand -Step 'npm install' -Command { & $npmCmd.Source install }
 }
 
+Ensure-DatabaseReady -PythonExe $pythonExe -ProjectRoot $projectRoot
+
 if (-not $SkipIngest) {
+    Write-Host "Using DATABASE_URL=$env:DATABASE_URL"
     if (-not (Invoke-IngestWithRetry -PythonExe $pythonExe -MaxAttempts 3)) {
-        Write-Warning 'Initial ingest failed after retries. Continuing startup.'
+        throw 'CRITICAL: Ingestion failed. Aborting startup.'
+    }
+
+    $verificationJson = & $pythonExe -c "import json; from backend.services.auth_db import require_engine; from sqlalchemy import text; e=require_engine();
+with e.connect() as c:
+ count=int(c.execute(text('SELECT COUNT(*) FROM embeddings')).scalar() or 0)
+ row=c.execute(text('SELECT e.tenant_id::text AS tenant_id FROM embeddings e GROUP BY e.tenant_id ORDER BY COUNT(*) DESC LIMIT 1')).mappings().first()
+ tenant_id=(row['tenant_id'] if row else '')
+print(json.dumps({'embedding_count': count, 'tenant_id': tenant_id}))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'CRITICAL: Failed to verify embeddings after ingestion.'
+    }
+
+    $verification = $verificationJson | ConvertFrom-Json
+    $embeddingCount = [int]$verification.embedding_count
+    $tenantId = [string]$verification.tenant_id
+
+    if ($tenantId) {
+        Write-Host ("[INFO] Tenant: {0}" -f $tenantId) -ForegroundColor DarkCyan
+    }
+
+    if ($embeddingCount -gt 0) {
+        Write-Host ("[OK] Embeddings loaded: {0}" -f $embeddingCount) -ForegroundColor Green
+        Write-Host '[OK] System ready' -ForegroundColor Green
+    }
+    else {
+        Write-Host '[ERROR] No embeddings found' -ForegroundColor Red
+        Write-Host '[ERROR] System is NOT ready' -ForegroundColor Red
+        throw 'CRITICAL: No embeddings found after ingestion. Aborting startup.'
     }
 }
 
@@ -179,7 +263,7 @@ if ($UseSeparateTerminals) {
     Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $watcherCommand | Out-Null
 
     Write-Host 'Starting FastAPI backend in a new terminal...' -ForegroundColor Cyan
-    $apiCommand = "Set-Location '$projectRoot'; & '$pythonExe' -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
+    $apiCommand = "Set-Location '$projectRoot'; & '$pythonExe' -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     Start-Process powershell -ArgumentList '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $apiCommand | Out-Null
 
     Write-Host 'Starting Next.js frontend in a new terminal...' -ForegroundColor Cyan
@@ -191,7 +275,7 @@ else {
     Start-BackgroundProcess -Name 'watcher' -FilePath $pythonExe -ArgumentList @('auto_ingest.py') -WorkingDirectory $projectRoot
 
     Write-Host 'Starting FastAPI backend in background (same terminal session)...' -ForegroundColor Cyan
-    Start-BackgroundProcess -Name 'api' -FilePath $pythonExe -ArgumentList @('-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8000', '--reload') -WorkingDirectory $projectRoot
+    Start-BackgroundProcess -Name 'api' -FilePath $pythonExe -ArgumentList @('-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', '8000', '--reload') -WorkingDirectory $projectRoot
 
     $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
     if (-not $npmCmd) {

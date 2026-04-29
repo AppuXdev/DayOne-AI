@@ -238,13 +238,34 @@ def rebuild_organization_index(
             print(f"[{org_name}] drift detection skipped: {exc}")
 
     try:
-        from backend.services.embedding_db import replace_tenant_embeddings  # noqa: PLC0415
+        from backend.services.embedding_db import replace_tenant_embeddings, _tenant_id_for_org  # noqa: PLC0415
+        from backend.services.auth_db import require_engine  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
 
-        n_written = replace_tenant_embeddings(
+        with require_engine().begin() as conn:
+            tenant_id = _tenant_id_for_org(conn, org_name)
+
+        print(f"[{org_name}] tenant_id={tenant_id}")
+        print(f"[{org_name}] chunks={len(all_chunks)}")
+
+        _, n_written = replace_tenant_embeddings(
             organization=org_name,
             chunks=all_chunks,
             embedding_model=embeddings,
         )
+
+        print(f"[{org_name}] embeddings_written={n_written}")
+
+        if n_written == 0 and len(all_chunks) > 0:
+            raise RuntimeError("No embeddings written — ingestion failed")
+
+        with require_engine().begin() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM embeddings WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_id}
+            ).scalar()
+        
+        print(f"[{org_name}] verification count = {count}")
         print(f"[{org_name}] pgvector refresh complete - {n_written} embedding row(s)")
     except Exception as exc:
         raise RuntimeError(f"[{org_name}] pgvector refresh failed: {exc}") from exc

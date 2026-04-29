@@ -1,0 +1,11 @@
+# Project Architecture
+- Frontend: Next.js (React)
+- Backend: FastAPI (Python)
+- Database: PostgreSQL (with pgvector)
+
+# Agent Directives for Local Execution
+1. AVOID SPRAWL: Do not run broad `ls` or `find` commands across the entire directory. Target specific folders (e.g., frontend/app or backend/api) based on the user's prompt.
+2. ISOLATE TASKS: Treat backend API routing and frontend UI development as separate phases. Do not attempt full-stack refactors in a single command. 
+3. UI FOCUS: When working on Next.js components, strictly follow React best practices and prioritize the exact UI requirements requested. Do not modify backend logic unless explicitly instructed.
+4. RAG IMPLEMENTATION: When writing search or retrieval logic, assume hybrid search using pgvector.
+5. CONSERVE CONTEXT: Always read a file before attempting to edit it. Make concise, targeted edits using the replace tool rather than rewriting entire files.

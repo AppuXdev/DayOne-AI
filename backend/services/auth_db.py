@@ -11,8 +11,11 @@ from functools import lru_cache
 from typing import Any, Dict, Optional
 
 from bcrypt import checkpw
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+load_dotenv()
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg://dayone:dayone@127.0.0.1:5432/dayone"
 _schema_lock = threading.Lock()

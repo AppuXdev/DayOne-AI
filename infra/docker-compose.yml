@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: dayone
       POSTGRES_DB: dayone
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../scripts/init_db.psql:/docker-entrypoint-initdb.d/01-init-db.sql:ro
