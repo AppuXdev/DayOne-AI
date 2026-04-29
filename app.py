@@ -524,8 +524,7 @@ def render_employee_sidebar(authenticator: stauth.Authenticate, org_id: str) -> 
 
 
 def _users_for_org(config: dict, org_id: str) -> List[dict]:
-    credentials = config.get("credentials", {})
-    usernames = credentials.get("usernames", {})
+    usernames = config.get("credentials", {}).get("usernames", {})
     if not isinstance(usernames, dict):
         return []
     scoped = [
