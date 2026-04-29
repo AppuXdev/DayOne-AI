@@ -3,6 +3,6 @@ credentials:
     john_doe:
       email: john@acmecorp.com
       name: John Doe
-      password: 12345678
+      password: "$2b$12$l6Xohvc941ca4Fq816znWe6OfGuP/OAeoB9rOxegV2kY7OKtDq7QK"
       organization: org_acme
       role: employee
